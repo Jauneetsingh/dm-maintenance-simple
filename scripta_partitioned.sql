@@ -4,27 +4,27 @@
 DO $$
 DECLARE
   tbl       regclass := current_setting('maint.table')::regclass;
-  wanted    text := format('FOR VALUES IN (%L)', current_setting('maint.rule'));
+  wanted    text := 'FOR VALUES IN (' || quote_literal(current_setting('maint.rule')) || ')';
   part      regclass;
   part_rows bigint;
   emptied   text := '';
 BEGIN
-  EXECUTE format('ANALYZE %s', tbl);                              -- refresh statistics before
+  EXECUTE 'ANALYZE ' || tbl;                                      -- refresh statistics before
 
   -- Find the partition(s) with the wanted definition.
   FOR part IN SELECT c.oid::regclass FROM pg_inherits i JOIN pg_class c ON c.oid = i.inhrelid
                WHERE i.inhparent = tbl AND pg_get_expr(c.relpartbound, c.oid) = wanted LOOP
     SELECT reltuples::bigint INTO part_rows FROM pg_class WHERE oid = part;   -- rows from statistics
-    EXECUTE format('LOCK TABLE %s IN ACCESS EXCLUSIVE MODE', part);
-    EXECUTE format('TRUNCATE TABLE %s', part);
-    RAISE NOTICE '%: emptied, about % rows removed', part, part_rows;
+    EXECUTE 'LOCK TABLE ' || part || ' IN ACCESS EXCLUSIVE MODE';
+    EXECUTE 'TRUNCATE TABLE ' || part;
+    RAISE NOTICE USING MESSAGE = part || ': emptied, about ' || part_rows || ' rows removed';
     emptied := emptied || part || ' (about ' || part_rows || ' rows) ';
   END LOOP;
 
   IF emptied = '' THEN
-    RAISE EXCEPTION 'No partition of % is defined as % - nothing changed', tbl, wanted;
+    RAISE EXCEPTION USING MESSAGE = 'No partition of ' || tbl || ' is defined as ' || wanted || ' - nothing changed';
   END IF;
 
-  EXECUTE format('ANALYZE %s', tbl);                              -- refresh statistics after
+  EXECUTE 'ANALYZE ' || tbl;                                      -- refresh statistics after
   PERFORM set_config('maint.result', 'emptied ' || emptied, false);   -- message for the log
 END $$;
