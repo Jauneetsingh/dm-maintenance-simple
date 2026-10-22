@@ -28,7 +28,7 @@ flowchart TD
 
 ## Tests
 
-`tests/run_tests.sh` runs 14 scenarios against a TEST database: the normal and partitioned runs, safety stops, rollbacks, triggers and identity columns, quoted names, and no load on the main table. Before every scenario it resets the dummy data. The latest results are in [`TEST_REPORT.md`](TEST_REPORT.md) and `TEST_REPORT.pdf`: **14 of 14 passed**.
+`tests/run_tests.sh` runs 16 scenarios against a TEST database: the normal and partitioned runs, mixed partitions, safety stops, rollbacks, triggers and identity columns, quoted names, and no load on the main table. Before every scenario it resets the dummy data. The latest results are in [`TEST_REPORT.md`](TEST_REPORT.md) and `TEST_REPORT.pdf`: **16 of 16 passed**.
 
 ```bash
 PGHOST=<server> PGUSER=postgres ./tests/run_tests.sh
