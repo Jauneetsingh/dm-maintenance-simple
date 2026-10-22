@@ -26,6 +26,16 @@ flowchart TD
 | [`scripta_partitioned.sql`](scripta_partitioned.sql) | For partitioned tables. It empties (`TRUNCATE`) the partition defined as `FOR VALUES IN ('<value>')`. |
 | [`scriptb_nonpartitioned.sql`](scriptb_nonpartitioned.sql) | For normal tables. It keeps the rows that match your rule: validate, copy, truncate, copy back, validate. |
 
+## Tests
+
+`tests/run_tests.sh` runs 14 scenarios against a TEST database: the normal and partitioned runs, safety stops, rollbacks, triggers and identity columns, quoted names, and no load on the main table. Before every scenario it resets the dummy data. The latest results are in [`TEST_REPORT.md`](TEST_REPORT.md) and `TEST_REPORT.pdf`: **14 of 14 passed**.
+
+```bash
+PGHOST=<server> PGUSER=postgres ./tests/run_tests.sh
+```
+
+**Warning:** the tests drop and recreate the schemas `dm` and `maint` in `testdb`.
+
 ## Requirements
 
 - PostgreSQL 12 or later
