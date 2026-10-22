@@ -20,7 +20,7 @@ SELECT count(*) = 1 AS found, max(c.oid::regclass::text) AS full_name, bool_or(c
   SELECT 1/0;
 \endif
 \if :is_partitioned
-  \prompt 'Partitioned table. Partition value to EMPTY [e.g. Y]: ' rule
+  \prompt 'Partitioned table. Rows to REMOVE [e.g. is_removed = ''Y'']: ' rule
 \else
   \prompt 'Normal table. Rows to KEEP [e.g. statusid IN (1, 2)]: ' rule
 \endif

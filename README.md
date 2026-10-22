@@ -3,7 +3,7 @@
 Three short PostgreSQL scripts that clean one table at a time, written so a DBA can read and check every line.
 
 - **Normal table:** keeps only the rows you choose and removes the rest (copy, truncate, copy back).
-- **Partitioned table:** empties only the partition that holds the removed rows (e.g. `is_removed = 'Y'`).
+- **Partitioned table:** removes only the rows matching your condition (e.g. `is_removed = 'Y'`). All other rows stay, even in partitions that hold both kinds.
 - **Safe by design:** it runs on the TEST database only, asks for a typed `YES`, runs as one transaction, and never counts rows on the main table.
 
 ## How it works
@@ -12,7 +12,7 @@ Three short PostgreSQL scripts that clean one table at a time, written so a DBA 
 flowchart TD
     A[main.sql] --> B[Ask schema and table]
     B --> C{Partitioned?<br/>checked in system tables}
-    C -- yes --> D[scripta_partitioned.sql<br/>empty the matching partition]
+    C -- yes --> D[scripta_partitioned.sql<br/>delete only matching rows]
     C -- no --> E[scriptb_nonpartitioned.sql<br/>copy, truncate, copy back]
     D --> F[Final output<br/>row in maint.maintenance_log]
     E --> F
@@ -23,7 +23,7 @@ flowchart TD
 | File | What it does |
 |---|---|
 | [`main.sql`](main.sql) | The only file you run. It checks the database, asks which table, chooses scripta or scriptb, and logs the result. |
-| [`scripta_partitioned.sql`](scripta_partitioned.sql) | For partitioned tables. It empties (`TRUNCATE`) the partition defined as `FOR VALUES IN ('<value>')`. |
+| [`scripta_partitioned.sql`](scripta_partitioned.sql) | For partitioned tables. It deletes only the rows matching your condition. |
 | [`scriptb_nonpartitioned.sql`](scriptb_nonpartitioned.sql) | For normal tables. It keeps the rows that match your rule: validate, copy, truncate, copy back, validate. |
 
 ## Tests
@@ -63,11 +63,11 @@ Normal table. Rows to KEEP [e.g. statusid IN (1, 2)]: statusid IN (1, 2)
 Type YES to continue: YES
 ```
 
-**Partitioned table:** empty the partition for `is_removed = 'Y'`.
+**Partitioned table:** remove the rows with `is_removed = 'Y'`.
 ```
 Schema name [e.g. dm]: dm
 Table name [e.g. filerequests or files]: files
-Partitioned table. Partition value to EMPTY [e.g. Y]: Y
+Partitioned table. Rows to REMOVE [e.g. is_removed = 'Y']: is_removed = 'Y'
 Type YES to continue: YES
 ```
 
@@ -87,12 +87,14 @@ Type YES to continue: YES
 
 | Step | Action |
 |---|---|
-| 1 | `ANALYZE` the table |
-| 2 | Find the partition defined as `FOR VALUES IN ('<value>')` in the system tables |
-| 3 | Lock it and `TRUNCATE` it. The parent table and the other partitions are not touched. |
-| 4 | `ANALYZE` again |
+| 0 | `ANALYZE`, then show the estimated rows now and rows to remove, from the system tables (`pg_class`, `EXPLAIN`) |
+| 1 | `DELETE` only the rows matching the condition. PostgreSQL only looks in the partitions that can hold them. |
+| 2 | Safety check: if no row at all is left, the condition was too wide (e.g. `1 = 1`), so everything is undone |
+| 3 | `ANALYZE` again |
 
-A partition defined as `FOR VALUES IN ('Y')` can only hold `'Y'` rows, so emptying it is safe, and the script doesn't need to read the data. This works for tables that are **LIST partitioned** by that column, e.g. `PARTITION BY LIST (is_removed)`.
+It works for any kind of partitioning (by list, range or hash). Rows that don't match the condition are never touched, even in a partition that holds both kinds.
+
+`DELETE` frees the space for new rows in the same table, but does not shrink the files on disk. Run `VACUUM` on the table after a large delete. Autovacuum does this later on its own.
 
 ## Final output and logging
 
@@ -102,7 +104,7 @@ Each run adds one row to `maint.maintenance_log`, which is created automatically
    table_name    |        rule        | status  |    duration     | message
 -----------------+--------------------+---------+-----------------+-----------------------------------------------------------------------------
  dm.filerequests | statusid IN (1, 2) | SUCCESS | 00:00:00.016124 | kept 2000, removed about 3000, backup in dm.maintenance_filerequests_20261022
- dm.files        | Y                  | SUCCESS | 00:00:00.015053 | emptied dm.files_removed (about 3000 rows)
+ dm.files        | is_removed = 'Y'   | SUCCESS | 00:00:00.015053 | removed 3000 rows matching (is_removed = 'Y')
 ```
 
 When a run fails, `status` is `FAILED` and `message` holds the error. To see past runs:
@@ -132,7 +134,7 @@ Row numbers marked "about" are estimates from the statistics. The exact numbers 
 | `STOP: not the TEST database` | Connected to another database | Connect to the TEST database, or set its name in `main.sql` |
 | `STOP: table not found` | Wrong schema or table name | Check the names |
 | `Cancelled - nothing was changed` | You didn't type `YES` | Run again |
-| `No partition ... is defined as FOR VALUES IN (...)` | No partition holds only that value | Check how the table is partitioned |
+| `The condition removes every row` | The condition matches all rows (probably a typo) | Fix the condition; nothing was changed |
 | `... already exists` | Already run today | Drop `maintenance_<table>_<date>`, or restore the database |
 | `cannot truncate a table referenced in a foreign key constraint` | Another table points to this one | Ask the team; this table can't be truncated |
 | `Copy check failed` / `Check after copy back failed` | A validation didn't match | Nothing was changed. Report the message. |
@@ -143,7 +145,7 @@ Row numbers marked "about" are estimates from the statistics. The exact numbers 
 - [ ] A full backup was taken and confirmed
 - [ ] Applications using the table are stopped
 - [ ] There is enough free disk space for a copy of the kept rows
-- [ ] The rule (rows to keep, or the partition value) is agreed with the data owner
+- [ ] The rule (rows to keep, or rows to remove) is agreed with the data owner
 
 ## Notes
 

@@ -52,10 +52,10 @@ s_S01() { reset; run S01 "$KEEP"
   echo "$(rows dm.filerequests)|$(Q "SELECT count(*) FROM dm.filerequests WHERE statusid NOT IN (1, 2)")|$(rows dm.maintenance_filerequests_$D)|$(status)"; }
 scenario S01 "Normal table: keep statusid IN (1, 2)" "2000|0|2000|SUCCESS"
 
-# S02 partitioned table: empty the 'Y' partition (3000 rows), keep 'N' (2000)
-s_S02() { reset; run S02 'dm\nfiles\nY\nYES\n'
-  echo "$(rows dm.files_removed)|$(rows dm.files_active)|$(rows dm.files_other)|$(status)"; }
-scenario S02 "Partitioned table: empty partition Y" "0|2000|0|SUCCESS"
+# S02 partitioned table: remove only rows with is_removed = 'Y' (3000), keep 'N' (2000)
+s_S02() { reset; run S02 "dm\nfiles\nis_removed = 'Y'\nYES\n"
+  echo "$(rows dm.files_removed)|$(rows dm.files_active)|$(Q "SELECT count(*) FROM dm.files WHERE is_removed = 'Y'")|$(status)"; }
+scenario S02 "Partitioned table: remove rows is_removed = 'Y'" "0|2000|0|SUCCESS"
 
 # S03 wrong database: run against database 'postgres'
 s_S03() { reset; run S03 '' postgres
@@ -103,19 +103,19 @@ s_S11() { reset; Q 'CREATE TABLE dm."Order Items" (id int PRIMARY KEY, statusid 
   echo "$(rows 'dm."Order Items"')|$(rows "dm.\"maintenance_Order Items_$D\"")|$(status)"; }
 scenario S11 "Table name with a space" "400|400|SUCCESS"
 
-# S12 partition value that has no partition
-s_S12() { reset; run S12 'dm\nfiles\nX\nYES\n'
-  echo "$(has S12 "No partition of dm.files is defined as FOR VALUES IN ('X')")|$(rows dm.files_removed)|$(rows dm.files_active)|$(status)"; }
-scenario S12 "Partition value not found: nothing changed" "yes|3000|2000|FAILED"
+# S12 condition that matches no row: nothing removed
+s_S12() { reset; run S12 "dm\nfiles\nis_removed = 'X'\nYES\n"
+  echo "$(has S12 'removed 0 rows')|$(rows dm.files_removed)|$(rows dm.files_active)|$(status)"; }
+scenario S12 "Condition matching no row: nothing removed" "yes|3000|2000|SUCCESS"
 
-# S13 table partitioned by date (RANGE), not by the removed column
+# S13 table partitioned by date (RANGE): both partitions hold 'Y' and 'N' rows; only 'Y' rows go
 s_S13() { reset; Q "CREATE TABLE dm.events (id int, is_removed char(1), created_on date) PARTITION BY RANGE (created_on);
     CREATE TABLE dm.events_2025 PARTITION OF dm.events FOR VALUES FROM ('2025-01-01') TO ('2026-01-01');
     CREATE TABLE dm.events_2026 PARTITION OF dm.events FOR VALUES FROM ('2026-01-01') TO ('2027-01-01');
     INSERT INTO dm.events SELECT g, CASE WHEN g % 2 = 0 THEN 'Y' ELSE 'N' END, date '2025-06-01' + g % 400 FROM generate_series(1, 1000) g" >/dev/null
-  run S13 'dm\nevents\nY\nYES\n'
-  echo "$(has S13 'No partition of dm.events')|$(rows dm.events)|$(status)"; }
-scenario S13 "RANGE-partitioned table: nothing changed" "yes|1000|FAILED"
+  run S13 "dm\nevents\nis_removed = 'Y'\nYES\n"
+  echo "$(rows dm.events)|$(Q "SELECT count(*) FROM dm.events WHERE is_removed = 'Y'")|$(Q "SELECT (SELECT count(*) FROM dm.events_2025) > 0 AND (SELECT count(*) FROM dm.events_2026) > 0")|$(status)"; }
+scenario S13 "Mixed partitions (RANGE by date): only matching rows removed" "500|0|t|SUCCESS"
 
 # S14 no full read of the main table except the copy step
 s_S14() { reset; sleep 2; local before after
@@ -124,6 +124,16 @@ s_S14() { reset; sleep 2; local before after
   after=$(Q "SELECT seq_scan FROM pg_stat_user_tables WHERE relid = 'dm.filerequests'::regclass")
   [[ "$before" =~ ^[0-9]+$ && "$after" =~ ^[0-9]+$ ]] && echo "$((after - before))|$(status)" || echo "psql: scan counter not read"; }
 scenario S14 "No count(*) on the main table (scan counter)" "3|SUCCESS"
+
+# S15 condition that matches every row (typo): refused, all undone
+s_S15() { reset; run S15 "dm\nfiles\nis_removed IN ('Y', 'N')\nYES\n"
+  echo "$(has S15 'The condition removes every row')|$(rows dm.files_removed)|$(rows dm.files_active)|$(status)"; }
+scenario S15 "Condition removing every row is refused" "yes|3000|2000|FAILED"
+
+# S16 condition with a wrong column name
+s_S16() { reset; run S16 "dm\nfiles\nno_such_column = 'Y'\nYES\n"
+  echo "$(has S16 'column "no_such_column" does not exist')|$(rows dm.files_removed)|$(rows dm.files_active)|$(status)"; }
+scenario S16 "Invalid remove condition is rolled back" "yes|3000|2000|FAILED"
 
 Q "SELECT now()::timestamp(0)" > "$OUT/finished_at"
 echo; echo "PASSED: $(grep -c $'\tPASS$' "$OUT/results.tsv")  FAILED: $(grep -c $'\tFAIL$' "$OUT/results.tsv")"
