@@ -2,13 +2,13 @@
 
 | | |
 |---|---|
-| Scripts | `main.sql`, `scripta_partitioned.sql`, `scriptb_nonpartitioned.sql` |
-| Server | Ubuntu test server (PostgreSQL 16.15 (Ubuntu)) |
+| Scripts | `run_maintenance.sh`, `tables/dm.files.sql`, `tables/dm.filerequests.sql` |
+| Server | Local Docker test container (PostgreSQL 16.15 (Debian)) |
 | Database | `testdb` |
-| Run | 2026-10-22 11:56:21 to 2026-10-22 12:03:40 (server time) |
-| Result | **16 of 16 scenarios passed** |
+| Run | 2026-10-23 03:15:21 to 2026-10-23 03:16:58 (server time) |
+| Result | **13 of 13 scenarios passed** |
 
-Before every scenario `tests/reset_data.sql` recreates the dummy data, and any extra data for that scenario is inserted. `main.sql` is then run with the answers shown, and the real result is checked with SQL queries. Rerun everything with:
+Before every scenario `tests/reset_data.sql` recreates the dummy data, and any extra data for that scenario is inserted. `run_maintenance.sh` is then run, answering only the connection questions, and the real result is checked with SQL queries. Rerun everything with:
 
 ```bash
 PGHOST=<server> PGUSER=postgres ./tests/run_tests.sh
@@ -18,236 +18,222 @@ PGHOST=<server> PGUSER=postgres ./tests/run_tests.sh
 
 | ID | Scenario | Result |
 |---|---|---|
-| S01 | Normal table: keep statusid IN (1, 2) | PASS |
-| S02 | Partitioned table: remove rows is_removed = 'Y' | PASS |
-| S03 | Wrong database is refused | PASS |
-| S04 | Table not found is refused | PASS |
-| S05 | No YES = cancelled | PASS |
-| S06 | Keep rule matching 0 rows is refused | PASS |
-| S07 | Invalid keep rule is rolled back | PASS |
-| S08 | Foreign key: TRUNCATE fails, all rolled back | PASS |
-| S09 | Second run same day fails safely | PASS |
-| S10 | Identity, generated column, index, trigger kept | PASS |
-| S11 | Table name with a space | PASS |
-| S12 | Condition matching no row: nothing removed | PASS |
-| S13 | Mixed partitions (RANGE by date): only matching rows removed | PASS |
-| S14 | No count(*) on the main table (scan counter) | PASS |
-| S15 | Condition removing every row is refused | PASS |
-| S16 | Invalid remove condition is rolled back | PASS |
+| S01 | Full run: partition N emptied, filerequests keeps statusid 1, 2 | PASS |
+| S02 | Table named on the command line: only that one runs | PASS |
+| S03 | Table without a script is refused, nothing runs | PASS |
+| S04 | Connection error is reported, nothing runs | PASS |
+| S05 | Commented-out table is not touched | PASS |
+| S06 | Partition missing: run stops, next table not run | PASS |
+| S07 | Wrong partition in the script: rule check stops it | PASS |
+| S08 | Foreign key: TRUNCATE fails, table rolled back | PASS |
+| S09 | Keep condition matching 0 rows is refused | PASS |
+| S10 | Invalid keep condition is rolled back | PASS |
+| S11 | Second run same day fails safely | PASS |
+| S12 | No count(*) on the main table (scan counter) | PASS |
+| S13 | Table in use: lock timeout after 60 s, nothing changed | PASS |
 
 ## Scenarios
 
-### S01. Normal table: keep rows: PASS
+### S01. Full run: partition N emptied, filerequests keeps statusid 1, 2: PASS
 
-- **Dummy data:** reset_data.sql: dm.filerequests 5,000 rows, statusid 1-5 (2,000 with statusid 1 or 2).
-- **Answers typed:** `dm / filerequests / statusid IN (1, 2) / YES`
-- **Expected:** 2,000 rows left, none with another statusid; backup table holds 2,000; log SUCCESS.
-- **Checked (rows left | rows with wrong statusid | rows in backup | log status):** expected `2000|0|2000|SUCCESS`, actual `2000|0|2000|SUCCESS`, exit code 0
-
-```
-NOTICE:  dm.filerequests: about 5000 rows, 2 indexes, 0 triggers
-NOTICE:  dm.filerequests: kept 2000, removed about 3000, indexes and triggers OK
-dm.filerequests | statusid IN (1, 2) | SUCCESS | 00:00:00.843035 | kept 2000, removed about 3000, backup in dm.maintenance_filerequests_20261022
-```
-
-### S02. Partitioned table: remove rows is_removed = 'Y': PASS
-
-- **Dummy data:** reset_data.sql: dm.files LIST partitioned by is_removed: files_removed ('Y') 3,000, files_active ('N') 2,000, files_other (DEFAULT) 0.
-- **Answers typed:** `dm / files / is_removed = 'Y' / YES`
-- **Expected:** Only the 3,000 'Y' rows deleted; the 2,000 'N' rows stay; log SUCCESS.
-- **Checked (files_removed | files_active | 'Y' rows left | log status):** expected `0|2000|0|SUCCESS`, actual `0|2000|0|SUCCESS`, exit code 0
+- **Dummy data:** reset_data.sql: dm.files 5,000 rows LIST partitioned by is_removed (files_active 'N' 2,000, files_removed 'Y' 3,000); dm.filerequests 5,000 rows, statusid 1-5.
+- **How it is run:** ./run_maintenance.sh (static list: dm.files, dm.filerequests)
+- **Expected:** files_active ('N') emptied, files_removed ('Y') untouched; filerequests keeps 2,000 rows, all statusid 1 or 2; dated copy holds 2,000; exit code 0.
+- **Checked (files_active | files_removed | filerequests | wrong statusid | rows in copy | exit code):** expected `0|3000|2000|0|2000|0`, actual `0|3000|2000|0|2000|0`, exit code 0
 
 ```
-NOTICE:  dm.files: about 5000 rows, about 3000 to remove
-NOTICE:  dm.files: removed 3000 rows matching (is_removed = 'Y')
-dm.files | is_removed = 'Y' | SUCCESS | 00:00:00.842986 | removed 3000 rows matching (is_removed = 'Y')
+2026-10-23 08:45:20 START DM maintenance on postgres@localhost:55432/testdb: dm.files dm.filerequests
+2026-10-23 08:45:20 START  dm.files
+check OK: about 2000 rows
+dm.files done: partition dm.files_active (is_removed = N) emptied, about 2000 rows removed
+2026-10-23 08:45:20 DONE   dm.files
+2026-10-23 08:45:20 START  dm.filerequests
+copy OK: 2000 rows
+check OK: 2000 rows copied back
+dm.filerequests done: kept 2000 rows, removed about 3000 rows, copy in dm.maintenance_filerequests_20261023
+2026-10-23 08:45:20 DONE   dm.filerequests
 ```
 
-### S03. Wrong database is refused: PASS
+### S02. Table named on the command line: only that one runs: PASS
 
-- **Dummy data:** reset_data.sql in testdb. The script is run while connected to database postgres.
-- **Answers typed:** `(stops before any question)`
-- **Expected:** Message 'STOP: not the TEST database', exit code 3, testdb unchanged, nothing logged.
-- **Checked (message shown | rows in testdb | log):** expected `yes|5000|no log`, actual `yes|5000|no log`, exit code 3
-
-```
-*** STOP: not the TEST database ***
-ERROR:  division by zero
-```
-
-### S04. Table not found is refused: PASS
-
-- **Dummy data:** reset_data.sql.
-- **Answers typed:** `dm / no_such_table`
-- **Expected:** Message 'STOP: table not found', exit code 3, nothing changed or logged.
-- **Checked (message shown | rows | log):** expected `yes|5000|no log`, actual `yes|5000|no log`, exit code 3
+- **Dummy data:** reset_data.sql: dm.files 5,000 rows LIST partitioned by is_removed (files_active 'N' 2,000, files_removed 'Y' 3,000); dm.filerequests 5,000 rows, statusid 1-5.
+- **How it is run:** ./run_maintenance.sh dm.filerequests
+- **Expected:** dm.filerequests done (2,000 rows); dm.files never started (files_active still 2,000); exit code 0.
+- **Checked (filerequests | files_active | dm.files started | exit code):** expected `2000|2000|no|0`, actual `2000|2000|no|0`, exit code 0
 
 ```
-*** STOP: table not found ***
-ERROR:  division by zero
+2026-10-23 08:45:21 START DM maintenance on postgres@localhost:55432/testdb: dm.filerequests
+2026-10-23 08:45:21 START  dm.filerequests
+copy OK: 2000 rows
+check OK: 2000 rows copied back
+dm.filerequests done: kept 2000 rows, removed about 3000 rows, copy in dm.maintenance_filerequests_20261023
+2026-10-23 08:45:21 DONE   dm.filerequests
+2026-10-23 08:45:21 COMPLETED DM maintenance: 1 table(s). Log: logs/dm_maintenance_20261023_084521.log
 ```
 
-### S05. No YES = cancelled: PASS
+### S03. Table without a script is refused, nothing runs: PASS
 
-- **Dummy data:** reset_data.sql.
-- **Answers typed:** `dm / filerequests / statusid IN (1, 2) / no`
-- **Expected:** Message 'Cancelled - nothing was changed', no backup table, nothing logged.
-- **Checked (message shown | rows | backup | log):** expected `yes|5000|no backup|no log`, actual `yes|5000|no backup|no log`, exit code 0
-
-```
-Cancelled - nothing was changed.
-```
-
-### S06. Keep rule matching 0 rows is refused: PASS
-
-- **Dummy data:** reset_data.sql (no row has statusid 99).
-- **Answers typed:** `dm / filerequests / statusid IN (99) / YES`
-- **Expected:** 'Copy check failed: copied 0', table still 5,000 rows, no backup left, log FAILED.
-- **Checked (message shown | rows | backup | log status):** expected `yes|5000|no backup|FAILED`, actual `yes|5000|no backup|FAILED`, exit code 0
+- **Dummy data:** reset_data.sql: dm.files 5,000 rows LIST partitioned by is_removed (files_active 'N' 2,000, files_removed 'Y' 3,000); dm.filerequests 5,000 rows, statusid 1-5.
+- **How it is run:** ./run_maintenance.sh dm.no_such_table
+- **Expected:** 'ERROR: no script tables/dm.no_such_table.sql' before the connection prompt; nothing changed; exit code 1.
+- **Checked (message shown | filerequests | files_active | exit code):** expected `yes|5000|2000|1`, actual `yes|5000|2000|1`, exit code 1
 
 ```
-NOTICE:  dm.filerequests: about 5000 rows, 2 indexes, 0 triggers
-ERROR:  Copy check failed: copied 0, found 0 in dm.maintenance_filerequests_20261022
-dm.filerequests | statusid IN (99) | FAILED | 00:00:00.831421 | Copy check failed: copied 0, found 0 in dm.maintenance_filerequests_20261022
+ERROR: no script tables/dm.no_such_table.sql for table dm.no_such_table - nothing was run
 ```
 
-### S07. Invalid keep rule is rolled back: PASS
+### S04. Connection error is reported, nothing runs: PASS
 
-- **Dummy data:** reset_data.sql.
-- **Answers typed:** `dm / filerequests / no_such_column = 1 / YES`
-- **Expected:** Error 'column does not exist', table unchanged, no backup left, log FAILED.
-- **Checked (message shown | rows | backup | log status):** expected `yes|5000|no backup|FAILED`, actual `yes|5000|no backup|FAILED`, exit code 0
-
-```
-NOTICE:  dm.filerequests: about 5000 rows, 2 indexes, 0 triggers
-ERROR:  column "no_such_column" does not exist
-dm.filerequests | no_such_column = 1 | FAILED | 00:00:00.855326 | column "no_such_column" does not exist
-```
-
-### S08. Foreign key: TRUNCATE fails, all rolled back: PASS
-
-- **Dummy data:** reset_data.sql + table dm.child with a foreign key to dm.filerequests.
-- **Answers typed:** `dm / filerequests / statusid IN (1, 2) / YES`
-- **Expected:** TRUNCATE refused, whole run undone: 5,000 rows, no backup left, log FAILED.
-- **Checked (message shown | rows | backup | log status):** expected `yes|5000|no backup|FAILED`, actual `yes|5000|no backup|FAILED`, exit code 0
+- **Dummy data:** reset_data.sql: dm.files 5,000 rows LIST partitioned by is_removed (files_active 'N' 2,000, files_removed 'Y' 3,000); dm.filerequests 5,000 rows, statusid 1-5.
+- **How it is run:** Connection prompt answered with database no_such_db.
+- **Expected:** 'ERROR: cannot connect', nothing changed, exit code 1.
+- **Checked (message shown | filerequests | exit code):** expected `yes|5000|1`, actual `yes|5000|1`, exit code 1
 
 ```
-NOTICE:  dm.filerequests: about 5000 rows, 2 indexes, 0 triggers
+2026-10-23 08:45:21 ERROR: cannot connect to postgres@localhost:55432/no_such_db (details in logs/dm_maintenance_20261023_084521.log)
+```
+
+### S05. Commented-out table is not touched: PASS
+
+- **Dummy data:** reset_data.sql: dm.files 5,000 rows LIST partitioned by is_removed (files_active 'N' 2,000, files_removed 'Y' 3,000); dm.filerequests 5,000 rows, statusid 1-5.
+- **How it is run:** Copy of run_maintenance.sh with # in front of dm.filerequests in TABLES.
+- **Expected:** dm.files done; dm.filerequests never started and still 5,000 rows; 'COMPLETED: 1 table(s)'.
+- **Checked (files_active | filerequests | filerequests started | COMPLETED 1 table):** expected `0|5000|no|yes`, actual `0|5000|no|yes`, exit code 0
+
+```
+2026-10-23 08:45:21 START DM maintenance on postgres@localhost:55432/testdb: dm.files
+2026-10-23 08:45:21 START  dm.files
+check OK: about 2000 rows
+dm.files done: partition dm.files_active (is_removed = N) emptied, about 2000 rows removed
+2026-10-23 08:45:21 DONE   dm.files
+2026-10-23 08:45:21 COMPLETED DM maintenance: 1 table(s). Log: logs/dm_maintenance_20261023_084521.log
+```
+
+### S06. Partition missing: run stops, next table not run: PASS
+
+- **Dummy data:** reset_data.sql: dm.files 5,000 rows LIST partitioned by is_removed (files_active 'N' 2,000, files_removed 'Y' 3,000); dm.filerequests 5,000 rows, statusid 1-5. Then partition files_active is dropped.
+- **How it is run:** ./run_maintenance.sh
+- **Expected:** 'relation "dm.files_active" does not exist', dm.files FAILED, dm.filerequests never started, exit code 1.
+- **Checked (message shown | FAILED logged | next table started | filerequests | exit code):** expected `yes|yes|no|5000|1`, actual `yes|yes|no|5000|1`, exit code 1
+
+```
+2026-10-23 08:45:21 START DM maintenance on postgres@localhost:55432/testdb: dm.files dm.filerequests
+2026-10-23 08:45:21 START  dm.files
+ERROR:  relation "dm.files_active" does not exist
+2026-10-23 08:45:21 FAILED dm.files - maintenance stopped, the tables after it were not run (error above)
+```
+
+### S07. Wrong partition in the script: rule check stops it: PASS
+
+- **Dummy data:** reset_data.sql: dm.files 5,000 rows LIST partitioned by is_removed (files_active 'N' 2,000, files_removed 'Y' 3,000); dm.filerequests 5,000 rows, statusid 1-5.
+- **How it is run:** Copy of dm.files.sql pointing at files_removed (holds 'Y') instead of files_active.
+- **Expected:** Rule check fails: 'is not the partition for is_removed = N'; no partition emptied (3,000 + 2,000 rows); exit code 1.
+- **Checked (message shown | files_removed | files_active | exit code):** expected `yes|3000|2000|1`, actual `yes|3000|2000|1`, exit code 1
+
+```
+2026-10-23 08:45:21 START DM maintenance on postgres@localhost:55432/testdb: dm.files
+2026-10-23 08:45:21 START  dm.files
+ERROR:  dm.files_removed is not the partition for is_removed = N - nothing was changed
+2026-10-23 08:45:22 FAILED dm.files - maintenance stopped, the tables after it were not run (error above)
+```
+
+### S08. Foreign key: TRUNCATE fails, table rolled back: PASS
+
+- **Dummy data:** reset_data.sql: dm.files 5,000 rows LIST partitioned by is_removed (files_active 'N' 2,000, files_removed 'Y' 3,000); dm.filerequests 5,000 rows, statusid 1-5. Plus dm.child with a foreign key to dm.filerequests.
+- **How it is run:** ./run_maintenance.sh dm.filerequests
+- **Expected:** TRUNCATE refused, everything undone: 5,000 rows, no copy left, exit code 1.
+- **Checked (message shown | filerequests | copy table | exit code):** expected `yes|5000|no backup|1`, actual `yes|5000|no backup|1`, exit code 1
+
+```
+2026-10-23 08:45:22 START DM maintenance on postgres@localhost:55432/testdb: dm.filerequests
+2026-10-23 08:45:22 START  dm.filerequests
+copy OK: 2000 rows
 ERROR:  cannot truncate a table referenced in a foreign key constraint
-dm.filerequests | statusid IN (1, 2) | FAILED | 00:00:00.845973 | cannot truncate a table referenced in a foreign key constraint
+2026-10-23 08:45:22 FAILED dm.filerequests - maintenance stopped, the tables after it were not run (error above)
 ```
 
-### S09. Second run on the same day fails safely: PASS
+### S09. Keep condition matching 0 rows is refused: PASS
 
-- **Dummy data:** reset_data.sql, then a first successful run (2,000 rows kept).
-- **Answers typed:** `dm / filerequests / statusid IN (1, 2) / YES (twice)`
-- **Expected:** Second run stops: backup table already exists; table and backup keep 2,000 rows; log FAILED.
-- **Checked (message shown | rows | rows in backup | log status):** expected `yes|2000|2000|FAILED`, actual `yes|2000|2000|FAILED`, exit code 0
-
-```
-NOTICE:  dm.filerequests: about 2000 rows, 2 indexes, 0 triggers
-ERROR:  relation "maintenance_filerequests_20261022" already exists
-dm.filerequests | statusid IN (1, 2) | FAILED | 00:00:00.94026 | relation "maintenance_filerequests_20261022" already exists
-```
-
-### S10. Identity, generated column, index, trigger preserved: PASS
-
-- **Dummy data:** reset_data.sql + setup_orders.sql: dm.orders 1,000 rows with an identity id, generated column amount_x2, 2 indexes, a row trigger writing to dm.order_audit.
-- **Answers typed:** `dm / orders / statusid = 1 / YES`
-- **Expected:** 200 rows, original ids kept, generated values correct, 2 valid indexes, 1 trigger, trigger fired on reload (1,000 + 200 audit rows), next id 1001; log SUCCESS.
-- **Checked (rows | ids kept | generated OK | valid indexes | triggers | audit rows | next id | log status):** expected `200|t|t|2|1|1200|1001|SUCCESS`, actual `200|t|t|2|1|1200|1001|SUCCESS`, exit code 0
+- **Dummy data:** reset_data.sql: dm.files 5,000 rows LIST partitioned by is_removed (files_active 'N' 2,000, files_removed 'Y' 3,000); dm.filerequests 5,000 rows, statusid 1-5.
+- **How it is run:** Copy of dm.filerequests.sql with WHERE statusid IN (99).
+- **Expected:** 'Copy check failed', table unchanged, no copy left, exit code 1.
+- **Checked (message shown | filerequests | copy table | exit code):** expected `yes|5000|no backup|1`, actual `yes|5000|no backup|1`, exit code 1
 
 ```
-NOTICE:  dm.orders: about 1000 rows, 2 indexes, 1 triggers
-NOTICE:  dm.orders: kept 200, removed about 800, indexes and triggers OK
-dm.orders | statusid = 1 | SUCCESS | 00:00:00.912033 | kept 200, removed about 800, backup in dm.maintenance_orders_20261022
+2026-10-23 08:45:22 START DM maintenance on postgres@localhost:55432/testdb: dm.filerequests
+2026-10-23 08:45:22 START  dm.filerequests
+ERROR:  Copy check failed - nothing was changed
+2026-10-23 08:45:22 FAILED dm.filerequests - maintenance stopped, the tables after it were not run (error above)
 ```
 
-### S11. Table name with a space: PASS
+### S10. Invalid keep condition is rolled back: PASS
 
-- **Dummy data:** reset_data.sql + dm."Order Items" 1,000 rows, statusid 1-5.
-- **Answers typed:** `dm / Order Items / statusid IN (1, 2) / YES`
-- **Expected:** 400 rows kept, backup dm."maintenance_Order Items_<date>" holds 400; log SUCCESS.
-- **Checked (rows | rows in backup | log status):** expected `400|400|SUCCESS`, actual `400|400|SUCCESS`, exit code 0
-
-```
-NOTICE:  dm."Order Items": about 1000 rows, 1 indexes, 0 triggers
-NOTICE:  dm."Order Items": kept 400, removed about 600, indexes and triggers OK
-dm."Order Items" | statusid IN (1, 2) | SUCCESS | 00:00:00.839004 | kept 400, removed about 600, backup in dm."maintenance_Order Items_20261022"
-```
-
-### S12. Condition matching no row: nothing removed: PASS
-
-- **Dummy data:** reset_data.sql (no row has is_removed = 'X').
-- **Answers typed:** `dm / files / is_removed = 'X' / YES`
-- **Expected:** 'removed 0 rows', all rows unchanged (3,000 + 2,000); log SUCCESS.
-- **Checked (message shown | files_removed | files_active | log status):** expected `yes|3000|2000|SUCCESS`, actual `yes|3000|2000|SUCCESS`, exit code 0
+- **Dummy data:** reset_data.sql: dm.files 5,000 rows LIST partitioned by is_removed (files_active 'N' 2,000, files_removed 'Y' 3,000); dm.filerequests 5,000 rows, statusid 1-5.
+- **How it is run:** Copy of dm.filerequests.sql with WHERE no_such_column = 1.
+- **Expected:** Error 'column does not exist', table unchanged, no copy left, exit code 1.
+- **Checked (message shown | filerequests | copy table | exit code):** expected `yes|5000|no backup|1`, actual `yes|5000|no backup|1`, exit code 1
 
 ```
-NOTICE:  dm.files: about 5000 rows, about 1 to remove
-NOTICE:  dm.files: removed 0 rows matching (is_removed = 'X')
-dm.files | is_removed = 'X' | SUCCESS | 00:00:00.868457 | removed 0 rows matching (is_removed = 'X')
-```
-
-### S13. Mixed partitions: only matching rows removed: PASS
-
-- **Dummy data:** reset_data.sql + dm.events 1,000 rows, PARTITION BY RANGE (created_on), 2 yearly partitions; both partitions hold 'Y' and 'N' rows (500 'Y').
-- **Answers typed:** `dm / events / is_removed = 'Y' / YES`
-- **Expected:** 500 'Y' rows deleted from both partitions, 500 'N' rows stay, both partitions still have rows; log SUCCESS.
-- **Checked (rows left | 'Y' rows left | both partitions still have rows | log status):** expected `500|0|t|SUCCESS`, actual `500|0|t|SUCCESS`, exit code 0
-
-```
-NOTICE:  dm.events: about 1000 rows, about 500 to remove
-NOTICE:  dm.events: removed 500 rows matching (is_removed = 'Y')
-dm.events | is_removed = 'Y' | SUCCESS | 00:00:00.889682 | removed 500 rows matching (is_removed = 'Y')
-```
-
-### S14. No count(*) on the main table: PASS
-
-- **Dummy data:** reset_data.sql. PostgreSQL's full-read counter (pg_stat_user_tables.seq_scan) is read before and after.
-- **Answers typed:** `dm / filerequests / statusid IN (1, 2) / YES`
-- **Expected:** Counter +3: 1 = the copy step, 2 = TRUNCATE rebuilding the 2 indexes on the empty table. No count(*) on the table.
-- **Checked (full reads | log status):** expected `3|SUCCESS`, actual `3|SUCCESS`, exit code 0
-
-```
-NOTICE:  dm.filerequests: about 5000 rows, 2 indexes, 0 triggers
-NOTICE:  dm.filerequests: kept 2000, removed about 3000, indexes and triggers OK
-dm.filerequests | statusid IN (1, 2) | SUCCESS | 00:00:00.866434 | kept 2000, removed about 3000, backup in dm.maintenance_filerequests_20261022
-```
-
-### S15. Condition removing every row is refused: PASS
-
-- **Dummy data:** reset_data.sql (every row of dm.files is 'Y' or 'N').
-- **Answers typed:** `dm / files / is_removed IN ('Y', 'N') / YES`
-- **Expected:** 'The condition removes every row' - the delete is undone: 3,000 + 2,000 rows stay; log FAILED.
-- **Checked (message shown | files_removed | files_active | log status):** expected `yes|3000|2000|FAILED`, actual `yes|3000|2000|FAILED`, exit code 0
-
-```
-NOTICE:  dm.files: about 5000 rows, about 5000 to remove
-ERROR:  The condition removes every row of dm.files - all undone, nothing changed
-dm.files | is_removed IN ('Y', 'N') | FAILED | 00:00:00.801008 | The condition removes every row of dm.files - all undone, nothing changed
-```
-
-### S16. Invalid remove condition is rolled back: PASS
-
-- **Dummy data:** reset_data.sql.
-- **Answers typed:** `dm / files / no_such_column = 'Y' / YES`
-- **Expected:** Error 'column does not exist', all rows unchanged; log FAILED.
-- **Checked (message shown | files_removed | files_active | log status):** expected `yes|3000|2000|FAILED`, actual `yes|3000|2000|FAILED`, exit code 0
-
-```
+2026-10-23 08:45:22 START DM maintenance on postgres@localhost:55432/testdb: dm.filerequests
+2026-10-23 08:45:22 START  dm.filerequests
 ERROR:  column "no_such_column" does not exist
-dm.files | no_such_column = 'Y' | FAILED | 00:00:00.845012 | column "no_such_column" does not exist
+2026-10-23 08:45:22 FAILED dm.filerequests - maintenance stopped, the tables after it were not run (error above)
+```
+
+### S11. Second run on the same day fails safely: PASS
+
+- **Dummy data:** reset_data.sql: dm.files 5,000 rows LIST partitioned by is_removed (files_active 'N' 2,000, files_removed 'Y' 3,000); dm.filerequests 5,000 rows, statusid 1-5.
+- **How it is run:** ./run_maintenance.sh dm.filerequests, twice
+- **Expected:** Second run stops: today's maintenance table already exists; table and copy keep 2,000 rows; exit code 1.
+- **Checked (message shown | filerequests | rows in copy | exit code):** expected `yes|2000|2000|1`, actual `yes|2000|2000|1`, exit code 1
+
+```
+2026-10-23 08:45:22 START DM maintenance on postgres@localhost:55432/testdb: dm.filerequests
+2026-10-23 08:45:22 START  dm.filerequests
+ERROR:  relation "maintenance_filerequests_20261023" already exists
+2026-10-23 08:45:22 FAILED dm.filerequests - maintenance stopped, the tables after it were not run (error above)
+```
+
+### S12. No count(*) on the main table: PASS
+
+- **Dummy data:** reset_data.sql: dm.files 5,000 rows LIST partitioned by is_removed (files_active 'N' 2,000, files_removed 'Y' 3,000); dm.filerequests 5,000 rows, statusid 1-5. PostgreSQL's full-read counter (pg_stat_user_tables.seq_scan) is read before and after.
+- **How it is run:** ./run_maintenance.sh dm.filerequests
+- **Expected:** Counter +3: 1 = the copy step, 2 = TRUNCATE rebuilding the 2 indexes on the empty table. No count(*) on the table.
+- **Checked (full reads | filerequests):** expected `3|2000`, actual `3|2000`, exit code 0
+
+```
+2026-10-23 08:45:25 START DM maintenance on postgres@localhost:55432/testdb: dm.filerequests
+2026-10-23 08:45:25 START  dm.filerequests
+copy OK: 2000 rows
+check OK: 2000 rows copied back
+dm.filerequests done: kept 2000 rows, removed about 3000 rows, copy in dm.maintenance_filerequests_20261023
+2026-10-23 08:45:25 DONE   dm.filerequests
+2026-10-23 08:45:25 COMPLETED DM maintenance: 1 table(s). Log: logs/dm_maintenance_20261023_084525.log
+```
+
+### S13. Table in use: lock timeout after 60 s: PASS
+
+- **Dummy data:** reset_data.sql: dm.files 5,000 rows LIST partitioned by is_removed (files_active 'N' 2,000, files_removed 'Y' 3,000); dm.filerequests 5,000 rows, statusid 1-5. Another session holds a lock on dm.filerequests for 90 seconds.
+- **How it is run:** ./run_maintenance.sh dm.filerequests
+- **Expected:** After 60 s 'canceling statement due to lock timeout'; nothing changed, no copy left, exit code 1.
+- **Checked (message shown | filerequests | copy table | exit code):** expected `yes|5000|no backup|1`, actual `yes|5000|no backup|1`, exit code 1
+
+```
+2026-10-23 08:45:30 START DM maintenance on postgres@localhost:55432/testdb: dm.filerequests
+2026-10-23 08:45:30 START  dm.filerequests
+ERROR:  canceling statement due to lock timeout
+2026-10-23 08:46:30 FAILED dm.filerequests - maintenance stopped, the tables after it were not run (error above)
 ```
 
 ## Observations
 
-- **Exit code on a failed run:** when the maintenance itself fails (S06-S09, S15, S16), psql still ends with exit code 0, because `main.sql` catches the error to write `FAILED` to `maint.maintenance_log`. Check the `status` in the final output or the log, not only the exit code. The safety stops before any change (S03, S04) end with exit code 3.
-- **DELETE and disk space:** on partitioned tables the matching rows are deleted. The space is reused for new rows, but the files only shrink after `VACUUM` (autovacuum runs it later on its own).
-- **Network:** each connection to the server took about 2 seconds. The test runner uses keepalives, a 90-second limit per call and up to 3 attempts per scenario. In this run S15 lost its connection once and passed on the second attempt, from a fresh reset.
+- **Exit codes:** `run_maintenance.sh` ends with 0 when every table is done and 1 when a table fails; the failing table and the error are in the log.
+- **The tests never change the real scripts:** each scenario runs a copy of `run_maintenance.sh` and `tables/` in `tests/results/`, changed only where the scenario says.
+- **Where:** this run used a local Docker test container (PostgreSQL 16.15). The Ubuntu test server was not reachable at the time; rerun the same tests there with `PGHOST=<server> ./tests/run_tests.sh` when it is back.
 
 ## Not covered
 
-- **Table locked by another session:** the scripts have no lock timeout, so they wait until the other session finishes. Stop applications before a real run.
 - **Production-size data:** these runs use 5,000 rows. Timing for the outage window must be measured on a production-size copy.
-- **DBeaver:** these scripts use psql commands (`\prompt`, `\if`) and are tested with psql only.
+- **Statement timeout (55 min):** set on every run but not triggered in these tests.
+- **Generated or GENERATED ALWAYS identity columns:** with `SELECT *` such a table fails at the copy-back step and is rolled back; not in the current table list.
+- **Production partition names:** the scripts use the test names (`files_active` for 'N'). Check them against production before the run.
