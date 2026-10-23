@@ -30,19 +30,21 @@ Password (press Enter to use ~/.pgpass):
 For each table it runs `tables/<table>.sql`. A table without a script is refused before anything runs. Everything is printed and saved to `logs/dm_maintenance_<date_time>.log`:
 
 ```
-2026-10-23 08:21:36 START DM maintenance on postgres@10.0.0.5:5432/datamag: dm.files dm.filerequests
-2026-10-23 08:21:36 START  dm.files
-0. Partitions of dm.files and their rules (from the system tables)
-   partition   |        rule         | rows
- files_active  | FOR VALUES IN ('N') | 2000
- files_other   | DEFAULT             |    0
- files_removed | FOR VALUES IN ('Y') | 3000
+2026-10-23 08:45:20 START DM maintenance on postgres@10.0.0.5:5432/datamag: dm.files dm.filerequests
+2026-10-23 08:45:20 START  dm.files
+0. Partitions of dm.files and their rules
+                  Partitioned table "dm.files"
+   ...
+Partition key: LIST (is_removed)
+Partitions: dm.files_active FOR VALUES IN ('N'),
+            dm.files_removed FOR VALUES IN ('Y'),
+            dm.files_other DEFAULT
 1. Check dm.files_active is the partition for is_removed = N
-   check OK: dm.files_active holds only is_removed = N, about 2000 rows
+   check OK: about 2000 rows
 2. Empty the partition
 dm.files done: partition dm.files_active (is_removed = N) emptied, about 2000 rows removed
-2026-10-23 08:21:36 DONE   dm.files
-2026-10-23 08:21:36 START  dm.filerequests
+2026-10-23 08:45:20 DONE   dm.files
+2026-10-23 08:45:20 START  dm.filerequests
 0. Before: rows (from statistics), indexes and triggers
    rows: 5000  indexes: 2  triggers: 0
 1. Copy the rows to keep into dm.maintenance_filerequests_20261023
@@ -52,16 +54,16 @@ dm.files done: partition dm.files_active (is_removed = N) emptied, about 2000 ro
 4. After: same rows as the copy, indexes valid, triggers still there
    check OK: 2000 rows copied back
 dm.filerequests done: kept 2000 rows, removed about 3000 rows, copy in dm.maintenance_filerequests_20261023
-2026-10-23 08:21:36 DONE   dm.filerequests
-2026-10-23 08:21:36 COMPLETED DM maintenance: 2 table(s). Log: logs/dm_maintenance_20261023_082136.log
+2026-10-23 08:45:20 DONE   dm.filerequests
+2026-10-23 08:45:20 COMPLETED DM maintenance: 2 table(s). Log: logs/dm_maintenance_20261023_084520.log
 ```
 
 If a table fails, its changes are undone, the run stops, and the tables after it are not touched:
 
 ```
-2026-10-23 08:21:36 START  dm.filerequests
+2026-10-23 08:45:20 START  dm.filerequests
 psql:tables/dm.filerequests.sql:32: ERROR:  cannot truncate a table referenced in a foreign key constraint
-2026-10-23 08:21:36 FAILED dm.filerequests - maintenance stopped, the tables after it were not run (error above)
+2026-10-23 08:45:20 FAILED dm.filerequests - maintenance stopped, the tables after it were not run (error above)
 ```
 
 ## What each table script does
@@ -69,15 +71,15 @@ psql:tables/dm.filerequests.sql:32: ERROR:  cannot truncate a table referenced i
 The scripts are plain SQL (`ANALYZE`, `SELECT`, `BEGIN`, `LOCK`, `CREATE TABLE ... AS`, `TRUNCATE`, `INSERT`, `COMMIT`) with short `\echo` messages. A check that fails stops the script, and nothing is changed.
 
 **`tables/dm.files.sql`** (partitioned table: empty the partition `is_removed = 'N'`)
-0. `ANALYZE`, then show every partition and its rule from the system tables.
-1. Check that `dm.files` is `LIST (is_removed)` and that `dm.files_active` is the partition `FOR VALUES IN ('N')`.
+0. Show the table, its partition key and every partition with its rule (`\d+ dm.files`).
+1. `ANALYZE`, then check that `dm.files_active` is the partition `FOR VALUES IN ('N')`.
 2. Lock the partition and `TRUNCATE` it. Then `ANALYZE` again.
 
 **`tables/dm.filerequests.sql`** (normal table: keep `statusid IN (1, 2)`)
 0. `ANALYZE`, then read the rows, indexes and triggers from the system tables.
-1. Lock the table and copy the rows to keep into the dated table `dm.maintenance_filerequests_<yyyymmdd>`. Check the copy.
+1. Lock the table and copy the rows to keep (`SELECT * ... WHERE statusid IN (1, 2)`) into the dated table `dm.maintenance_filerequests_<yyyymmdd>`. Check the copy.
 2. `TRUNCATE` the table.
-3. Copy the rows back, with every column listed by name.
+3. Copy the rows back (`INSERT INTO ... SELECT *`).
 4. Check the rows copied back, that the indexes are valid and that the triggers are still there. `COMMIT`, then `ANALYZE`.
 
 ## Changing things (every 6 months)
@@ -87,8 +89,7 @@ The scripts are plain SQL (`ANALYZE`, `SELECT`, `BEGIN`, `LOCK`, `CREATE TABLE .
 | Skip a table | Put `#` in front of its line in the `TABLES` list in `run_maintenance.sh` |
 | Change the rows to keep | Edit the `WHERE` line in step 1 of `tables/dm.filerequests.sql` |
 | Change the partition | Edit the partition name and rule in steps 1 and 2 of `tables/dm.files.sql` |
-| Add a table | Copy a table script to `tables/<schema>.<table>.sql`, change the names, columns and rule, and add the table to `TABLES` |
-| Columns added to a table | Add them to the column lists in steps 1 and 3 of its script |
+| Add a table | Copy a table script to `tables/<schema>.<table>.sql`, change the table name and the rule (`WHERE` line, or partition name and value), and add the table to `TABLES` |
 
 ## Safety
 
@@ -100,6 +101,7 @@ The scripts are plain SQL (`ANALYZE`, `SELECT`, `BEGIN`, `LOCK`, `CREATE TABLE .
 | Fits the outage | `lock_timeout` 60 seconds (it never waits forever for a busy table) and `statement_timeout` 55 minutes |
 | No heavy scans | Row numbers come from the system tables (`pg_class`) after `ANALYZE`. Only the copy step reads the table. |
 | Partition checked first | The partition rule is read from the system tables before `TRUNCATE` |
+| `SELECT *` | The copy is made from the table in the same run, so the columns always match. A table with a generated column or a `GENERATED ALWAYS` identity column fails at the copy-back step and is rolled back. |
 
 ## Tests
 

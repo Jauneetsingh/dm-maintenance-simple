@@ -1,5 +1,5 @@
 -- dm.filerequests (normal table): keep only the rows with statusid IN (1, 2), remove the rest.
--- To change the rule, edit the WHERE line in step 1. If columns are added to the table, add them in steps 1 and 3.
+-- For another table: copy this file to tables/<schema>.<table>.sql and change the table name and the WHERE line.
 -- :today (e.g. 20261023) is passed in by run_maintenance.sh.
 
 \echo '0. Before: rows (from statistics), indexes and triggers'
@@ -15,8 +15,7 @@ LOCK TABLE dm.filerequests IN ACCESS EXCLUSIVE MODE;
 
 \echo '1. Copy the rows to keep into dm.maintenance_filerequests_':today
 CREATE TABLE dm.maintenance_filerequests_:today AS
-SELECT requestid, fileid, typeid, statusid, requested, achieved, bytes, datasetid, commandid, error, projectid, fromjob
-  FROM dm.filerequests
+SELECT * FROM dm.filerequests
  WHERE statusid IN (1, 2);
 \set rows_copied :ROW_COUNT
 
@@ -32,9 +31,7 @@ SELECT count(*) = :rows_copied AND count(*) > 0 AS copy_ok FROM dm.maintenance_f
 TRUNCATE TABLE dm.filerequests;
 
 \echo '3. Copy the rows back'
-INSERT INTO dm.filerequests (requestid, fileid, typeid, statusid, requested, achieved, bytes, datasetid, commandid, error, projectid, fromjob)
-SELECT requestid, fileid, typeid, statusid, requested, achieved, bytes, datasetid, commandid, error, projectid, fromjob
-  FROM dm.maintenance_filerequests_:today;
+INSERT INTO dm.filerequests SELECT * FROM dm.maintenance_filerequests_:today;
 \set rows_back :ROW_COUNT
 
 \echo '4. After: same rows as the copy, indexes valid, triggers still there'
