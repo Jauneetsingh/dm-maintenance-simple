@@ -1,139 +1,130 @@
 #!/usr/bin/env bash
-# run_tests.sh: runs every test scenario of main.sql against a TEST database.
-# Before each scenario the dummy data is reset (tests/reset_data.sql) and any extra
-# data for that scenario is inserted. Results go to tests/results/.
+# run_tests.sh: runs every test scenario of run_maintenance.sh against a TEST database.
+# Before each scenario the dummy data is reset (tests/reset_data.sql) and any extra data
+# for that scenario is inserted. Each scenario runs a COPY of the scripts in tests/results/,
+# so run_maintenance.sh and tables/*.sql are never changed by the tests.
 #
 # Usage (password from ~/.pgpass):
 #   PGHOST=<server> PGUSER=postgres ./tests/run_tests.sh
-# WARNING: drops and recreates schemas dm and maint in database testdb.
+# WARNING: drops and recreates schema dm in database testdb.
 set -u
 cd "$(dirname "$0")/.."
 DB=${TESTDB:-testdb}
-OUT=tests/results
+OUT=$PWD/tests/results
 rm -rf "$OUT"; mkdir -p "$OUT"
 
 # Connection settings: give up on a lost connection instead of waiting forever.
-export PGCONNECT_TIMEOUT=${PGCONNECT_TIMEOUT:-15}
+export PGCONNECT_TIMEOUT=${PGCONNECT_TIMEOUT:-15} PGPORT=${PGPORT:-5432}
 KA="keepalives_idle=5 keepalives_interval=5 keepalives_count=3"
-pg()     { perl -e 'alarm 90; exec @ARGV' psql -X -w "$@"; }            # psql, stopped after 90 seconds at most
+pg()     { perl -e 'alarm 150; exec @ARGV' psql -X -w "$@"; }           # psql, stopped after 150 seconds at most
 Q()      { pg -q -d "dbname=$DB $KA" -Atc "$1" 2>&1; }                  # one query, plain output
-reset()  { pg -q -d "dbname=$DB $KA" -f tests/reset_data.sql >/dev/null 2>&1; Q "DROP SCHEMA IF EXISTS maint CASCADE" >/dev/null; }
-run()    { printf "$2" | pg -d "dbname=${3:-$DB} $KA" -f main.sql > "$OUT/$1.out" 2>&1; echo $? > "$OUT/$1.exit"; }
-status() { [[ $(Q "SELECT to_regclass('maint.maintenance_log') IS NULL") == t ]] && echo "no log" ||
-           Q "SELECT status FROM maint.maintenance_log ORDER BY log_id DESC LIMIT 1"; }
-has()    { grep -qF "$2" "$OUT/$1.out" && echo yes || echo no; }       # does the output contain this text?
+reset()  { pg -q -d "dbname=$DB $KA" -f tests/reset_data.sql >/dev/null 2>&1; }
 rows()   { Q "SELECT count(*) FROM $1"; }
 backup() { Q "SELECT coalesce(to_regclass('dm.maintenance_filerequests_$D')::text, 'no backup')"; }
+has()    { grep -qF "$2" "$OUT/$1.out" && echo yes || echo no; }       # does the output contain this text?
+code()   { cat "$OUT/$1.exit"; }
+
+# copy <id>: a copy of the scripts for one scenario (so a test can change it).
+copy() { local w="$OUT/work_$1"; rm -rf "$w"; mkdir -p "$w"; cp -R run_maintenance.sh tables "$w/"; echo "$w"; }
+# run <id> <work dir> [table names...]: run_maintenance.sh, answering only the connection questions.
+run() {
+  local id=$1 w=$2; shift 2
+  printf '%s\n%s\n%s\n%s\n\n' "$PGHOST" "$PGPORT" "${DBNAME:-$DB}" "$PGUSER" |
+    perl -e 'alarm 300; exec @ARGV' bash "$w/run_maintenance.sh" "$@" > "$OUT/$id.out" 2>&1
+  echo $? > "$OUT/$id.exit"
+}
 
 # Runs one scenario (function s_<id>) and records PASS / FAIL. If the network drops a
 # connection, the whole scenario is repeated from a fresh reset (up to 3 attempts).
 scenario() { # id | name | expected
-  local id=$1 actual attempt
+  local id=$1 actual attempt ok
   for attempt in 1 2 3; do
     actual=$("s_$id")
-    local ok=yes
-    grep -qE "could not connect|server closed|connection to server|SSL SYSCALL|timeout expired|Alarm clock" "$OUT/$id.out" && ok=no
+    ok=yes
+    grep -qE "server closed|connection to server .* failed|SSL SYSCALL|timeout expired|Alarm clock" "$OUT/$id.out" 2>/dev/null && ok=no
     [[ "$actual" == *psql:* || "$actual" == *error:* || "|$actual|" == *"||"* ]] && ok=no   # a check query failed
     [[ $ok == yes ]] && break
     echo "     $id: connection problem, retrying (attempt $((attempt + 1)))"
   done
   local r=FAIL; [[ "$3" == "$actual" ]] && r=PASS
-  printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$id" "$2" "$3" "$actual" "$(cat "$OUT/$id.exit")" "$r" >> "$OUT/results.tsv"
+  printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$id" "$2" "$3" "$actual" "$(code "$id")" "$r" >> "$OUT/results.tsv"
   printf '%-4s %-4s %s\n' "$r" "$id" "$2"
 }
 
-KEEP='dm\nfilerequests\nstatusid IN (1, 2)\nYES\n'
 D=$(Q "SELECT to_char(now(), 'YYYYMMDD')")
 echo "Server: $(Q "SELECT split_part(version(), ' on ', 1)")  database: $DB  date: $D"
 Q "SELECT now()::timestamp(0)" > "$OUT/started_at"
 
-# S01 normal table: keep statusid 1 and 2 (5000 rows -> 2000)
-s_S01() { reset; run S01 "$KEEP"
-  echo "$(rows dm.filerequests)|$(Q "SELECT count(*) FROM dm.filerequests WHERE statusid NOT IN (1, 2)")|$(rows dm.maintenance_filerequests_$D)|$(status)"; }
-scenario S01 "Normal table: keep statusid IN (1, 2)" "2000|0|2000|SUCCESS"
+# S01 full run of the static list: dm.files partition 'N' emptied, dm.filerequests keeps statusid 1, 2
+s_S01() { reset; run S01 "$(copy S01)"
+  echo "$(rows dm.files_active)|$(rows dm.files_removed)|$(rows dm.filerequests)|$(Q "SELECT count(*) FROM dm.filerequests WHERE statusid NOT IN (1, 2)")|$(rows dm.maintenance_filerequests_$D)|$(code S01)"; }
+scenario S01 "Full run: partition N emptied, filerequests keeps statusid 1, 2" "0|3000|2000|0|2000|0"
 
-# S02 partitioned table: remove only rows with is_removed = 'Y' (3000), keep 'N' (2000)
-s_S02() { reset; run S02 "dm\nfiles\nis_removed = 'Y'\nYES\n"
-  echo "$(rows dm.files_removed)|$(rows dm.files_active)|$(Q "SELECT count(*) FROM dm.files WHERE is_removed = 'Y'")|$(status)"; }
-scenario S02 "Partitioned table: remove rows is_removed = 'Y'" "0|2000|0|SUCCESS"
+# S02 one table named on the command line: only that table is done
+s_S02() { reset; run S02 "$(copy S02)" dm.filerequests
+  echo "$(rows dm.filerequests)|$(rows dm.files_active)|$(has S02 'START  dm.files')|$(code S02)"; }
+scenario S02 "Table named on the command line: only that one runs" "2000|2000|no|0"
 
-# S03 wrong database: run against database 'postgres'
-s_S03() { reset; run S03 '' postgres
-  echo "$(has S03 'STOP: not the TEST database')|$(rows dm.filerequests)|$(status)"; }
-scenario S03 "Wrong database is refused" "yes|5000|no log"
+# S03 table named that has no script in tables/
+s_S03() { reset; run S03 "$(copy S03)" dm.no_such_table
+  echo "$(has S03 'ERROR: no script tables/dm.no_such_table.sql')|$(rows dm.filerequests)|$(rows dm.files_active)|$(code S03)"; }
+scenario S03 "Table without a script is refused, nothing runs" "yes|5000|2000|1"
 
-# S04 table does not exist
-s_S04() { reset; run S04 'dm\nno_such_table\n'
-  echo "$(has S04 'STOP: table not found')|$(rows dm.filerequests)|$(status)"; }
-scenario S04 "Table not found is refused" "yes|5000|no log"
+# S04 wrong database name in the connection prompt
+s_S04() { reset; DBNAME=no_such_db run S04 "$(copy S04)"
+  echo "$(has S04 'ERROR: cannot connect')|$(rows dm.filerequests)|$(code S04)"; }
+scenario S04 "Connection error is reported, nothing runs" "yes|5000|1"
 
-# S05 user does not type YES
-s_S05() { reset; run S05 'dm\nfilerequests\nstatusid IN (1, 2)\nno\n'
-  echo "$(has S05 'Cancelled - nothing was changed')|$(rows dm.filerequests)|$(backup)|$(status)"; }
-scenario S05 "No YES = cancelled" "yes|5000|no backup|no log"
+# S05 table commented out of the list: only dm.files is done
+s_S05() { reset; local w; w=$(copy S05); sed -i '' 's/^  dm.filerequests /# dm.filerequests /' "$w/run_maintenance.sh"; run S05 "$w"
+  echo "$(rows dm.files_active)|$(rows dm.filerequests)|$(has S05 'START  dm.filerequests')|$(has S05 'COMPLETED DM maintenance: 1 table(s)')"; }
+scenario S05 "Commented-out table is not touched" "0|5000|no|yes"
 
-# S06 keep rule matches 0 rows
-s_S06() { reset; run S06 'dm\nfilerequests\nstatusid IN (99)\nYES\n'
-  echo "$(has S06 'Copy check failed: copied 0')|$(rows dm.filerequests)|$(backup)|$(status)"; }
-scenario S06 "Keep rule matching 0 rows is refused" "yes|5000|no backup|FAILED"
+# S06 partition for 'N' does not exist: first table fails, run stops, next table not run
+s_S06() { reset; Q "DROP TABLE dm.files_active" >/dev/null; run S06 "$(copy S06)"
+  echo "$(has S06 'relation "dm.files_active" does not exist')|$(has S06 'FAILED dm.files')|$(has S06 'START  dm.filerequests')|$(rows dm.filerequests)|$(code S06)"; }
+scenario S06 "Partition missing: run stops, next table not run" "yes|yes|no|5000|1"
 
-# S07 keep rule with a wrong column name
-s_S07() { reset; run S07 'dm\nfilerequests\nno_such_column = 1\nYES\n'
-  echo "$(has S07 'column "no_such_column" does not exist')|$(rows dm.filerequests)|$(backup)|$(status)"; }
-scenario S07 "Invalid keep rule is rolled back" "yes|5000|no backup|FAILED"
+# S07 script points at the wrong partition (files_removed holds 'Y'): rule check fails, nothing emptied
+s_S07() { reset; local w; w=$(copy S07); sed -i '' 's/files_active/files_removed/g' "$w/tables/dm.files.sql"; run S07 "$w" dm.files
+  echo "$(has S07 'is not the partition for is_removed = N')|$(rows dm.files_removed)|$(rows dm.files_active)|$(code S07)"; }
+scenario S07 "Wrong partition in the script: rule check stops it" "yes|3000|2000|1"
 
-# S08 another table has a foreign key to dm.filerequests
-s_S08() { reset; Q "CREATE TABLE dm.child (requestid numeric REFERENCES dm.filerequests)" >/dev/null; run S08 "$KEEP"
-  echo "$(has S08 'foreign key constraint')|$(rows dm.filerequests)|$(backup)|$(status)"; }
-scenario S08 "Foreign key: TRUNCATE fails, all rolled back" "yes|5000|no backup|FAILED"
+# S08 foreign key to dm.filerequests: TRUNCATE fails, table rolled back
+s_S08() { reset; Q "CREATE TABLE dm.child (requestid numeric REFERENCES dm.filerequests)" >/dev/null; run S08 "$(copy S08)" dm.filerequests
+  echo "$(has S08 'foreign key constraint')|$(rows dm.filerequests)|$(backup)|$(code S08)"; }
+scenario S08 "Foreign key: TRUNCATE fails, table rolled back" "yes|5000|no backup|1"
 
-# S09 second run on the same day
-s_S09() { reset; run S09a "$KEEP"; run S09 "$KEEP"
-  echo "$(has S09 'already exists')|$(rows dm.filerequests)|$(rows dm.maintenance_filerequests_$D)|$(status)"; }
-scenario S09 "Second run same day fails safely" "yes|2000|2000|FAILED"
+# S09 keep condition matching 0 rows: copy check fails
+s_S09() { reset; local w; w=$(copy S09); sed -i '' 's/WHERE statusid IN (1, 2)/WHERE statusid IN (99)/' "$w/tables/dm.filerequests.sql"; run S09 "$w" dm.filerequests
+  echo "$(has S09 'Copy check failed')|$(rows dm.filerequests)|$(backup)|$(code S09)"; }
+scenario S09 "Keep condition matching 0 rows is refused" "yes|5000|no backup|1"
 
-# S10 identity column, generated column, index and trigger are preserved
-s_S10() { reset; pg -q -d "dbname=$DB $KA" -f tests/setup_orders.sql >/dev/null 2>&1; run S10 'dm\norders\nstatusid = 1\nYES\n'
-  echo "$(rows dm.orders)|$(Q "SELECT bool_and(id % 5 = 0) FROM dm.orders")|$(Q "SELECT bool_and(amount_x2 = amount * 2) FROM dm.orders")|$(Q "SELECT count(*) FROM pg_index WHERE indrelid = 'dm.orders'::regclass AND indisvalid")|$(Q "SELECT count(*) FROM pg_trigger WHERE tgrelid = 'dm.orders'::regclass AND NOT tgisinternal")|$(rows dm.order_audit)|$(Q "INSERT INTO dm.orders (statusid, amount) VALUES (1, 1) RETURNING id")|$(status)"; }
-scenario S10 "Identity, generated column, index, trigger kept" "200|t|t|2|1|1200|1001|SUCCESS"
+# S10 keep condition with a wrong column name
+s_S10() { reset; local w; w=$(copy S10); sed -i '' 's/WHERE statusid IN (1, 2)/WHERE no_such_column = 1/' "$w/tables/dm.filerequests.sql"; run S10 "$w" dm.filerequests
+  echo "$(has S10 'column "no_such_column" does not exist')|$(rows dm.filerequests)|$(backup)|$(code S10)"; }
+scenario S10 "Invalid keep condition is rolled back" "yes|5000|no backup|1"
 
-# S11 table name that needs quotes ("Order Items")
-s_S11() { reset; Q 'CREATE TABLE dm."Order Items" (id int PRIMARY KEY, statusid int); INSERT INTO dm."Order Items" SELECT g, g % 5 + 1 FROM generate_series(1, 1000) g; ANALYZE dm."Order Items"' >/dev/null
-  run S11 'dm\nOrder Items\nstatusid IN (1, 2)\nYES\n'
-  echo "$(rows 'dm."Order Items"')|$(rows "dm.\"maintenance_Order Items_$D\"")|$(status)"; }
-scenario S11 "Table name with a space" "400|400|SUCCESS"
+# S11 second run on the same day: dated maintenance table already exists
+s_S11() { reset; local w; w=$(copy S11); run S11a "$w" dm.filerequests; run S11 "$w" dm.filerequests
+  echo "$(has S11 'already exists')|$(rows dm.filerequests)|$(rows dm.maintenance_filerequests_$D)|$(code S11)"; }
+scenario S11 "Second run same day fails safely" "yes|2000|2000|1"
 
-# S12 condition that matches no row: nothing removed
-s_S12() { reset; run S12 "dm\nfiles\nis_removed = 'X'\nYES\n"
-  echo "$(has S12 'removed 0 rows')|$(rows dm.files_removed)|$(rows dm.files_active)|$(status)"; }
-scenario S12 "Condition matching no row: nothing removed" "yes|3000|2000|SUCCESS"
-
-# S13 table partitioned by date (RANGE): both partitions hold 'Y' and 'N' rows; only 'Y' rows go
-s_S13() { reset; Q "CREATE TABLE dm.events (id int, is_removed char(1), created_on date) PARTITION BY RANGE (created_on);
-    CREATE TABLE dm.events_2025 PARTITION OF dm.events FOR VALUES FROM ('2025-01-01') TO ('2026-01-01');
-    CREATE TABLE dm.events_2026 PARTITION OF dm.events FOR VALUES FROM ('2026-01-01') TO ('2027-01-01');
-    INSERT INTO dm.events SELECT g, CASE WHEN g % 2 = 0 THEN 'Y' ELSE 'N' END, date '2025-06-01' + g % 400 FROM generate_series(1, 1000) g" >/dev/null
-  run S13 "dm\nevents\nis_removed = 'Y'\nYES\n"
-  echo "$(rows dm.events)|$(Q "SELECT count(*) FROM dm.events WHERE is_removed = 'Y'")|$(Q "SELECT (SELECT count(*) FROM dm.events_2025) > 0 AND (SELECT count(*) FROM dm.events_2026) > 0")|$(status)"; }
-scenario S13 "Mixed partitions (RANGE by date): only matching rows removed" "500|0|t|SUCCESS"
-
-# S14 no full read of the main table except the copy step
-s_S14() { reset; sleep 2; local before after
+# S12 no full read of the main table except the copy step
+s_S12() { reset; sleep 2; local before after w; w=$(copy S12)
   before=$(Q "SELECT seq_scan FROM pg_stat_user_tables WHERE relid = 'dm.filerequests'::regclass")
-  run S14 "$KEEP"; sleep 2
+  run S12 "$w" dm.filerequests; sleep 2
   after=$(Q "SELECT seq_scan FROM pg_stat_user_tables WHERE relid = 'dm.filerequests'::regclass")
-  [[ "$before" =~ ^[0-9]+$ && "$after" =~ ^[0-9]+$ ]] && echo "$((after - before))|$(status)" || echo "psql: scan counter not read"; }
-scenario S14 "No count(*) on the main table (scan counter)" "3|SUCCESS"
+  [[ "$before" =~ ^[0-9]+$ && "$after" =~ ^[0-9]+$ ]] && echo "$((after - before))|$(rows dm.filerequests)" || echo "psql: scan counter not read"; }
+scenario S12 "No count(*) on the main table (scan counter)" "3|2000"
 
-# S15 condition that matches every row (typo): refused, all undone
-s_S15() { reset; run S15 "dm\nfiles\nis_removed IN ('Y', 'N')\nYES\n"
-  echo "$(has S15 'The condition removes every row')|$(rows dm.files_removed)|$(rows dm.files_active)|$(status)"; }
-scenario S15 "Condition removing every row is refused" "yes|3000|2000|FAILED"
-
-# S16 condition with a wrong column name
-s_S16() { reset; run S16 "dm\nfiles\nno_such_column = 'Y'\nYES\n"
-  echo "$(has S16 'column "no_such_column" does not exist')|$(rows dm.files_removed)|$(rows dm.files_active)|$(status)"; }
-scenario S16 "Invalid remove condition is rolled back" "yes|3000|2000|FAILED"
+# S13 another session uses the table: lock_timeout (60 s) stops the run instead of waiting forever
+s_S13() { reset; local w; w=$(copy S13)
+  pg -q -d "dbname=$DB $KA" -c "BEGIN; LOCK TABLE dm.filerequests IN ACCESS SHARE MODE; SELECT pg_sleep(90); COMMIT;" >/dev/null 2>&1 &
+  local holder=$!; sleep 3
+  run S13 "$w" dm.filerequests; wait $holder
+  echo "$(has S13 'canceling statement due to lock timeout')|$(rows dm.filerequests)|$(backup)|$(code S13)"; }
+scenario S13 "Table in use: lock timeout after 60 s, nothing changed" "yes|5000|no backup|1"
 
 Q "SELECT now()::timestamp(0)" > "$OUT/finished_at"
 echo; echo "PASSED: $(grep -c $'\tPASS$' "$OUT/results.tsv")  FAILED: $(grep -c $'\tFAIL$' "$OUT/results.tsv")"

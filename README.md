@@ -1,155 +1,124 @@
-# DM Maintenance (simple)
+# DM Maintenance
 
-Three short PostgreSQL scripts that clean one table at a time, written so a DBA can read and check every line.
-
-- **Normal table:** keeps only the rows you choose and removes the rest (copy, truncate, copy back).
-- **Partitioned table:** removes only the rows matching your condition (e.g. `is_removed = 'Y'`). All other rows stay, even in partitions that hold both kinds.
-- **Safe by design:** it runs on the TEST database only, asks for a typed `YES`, runs as one transaction, and never counts rows on the main table.
-
-## How it works
-
-```mermaid
-flowchart TD
-    A[main.sql] --> B[Ask schema and table]
-    B --> C{Partitioned?<br/>checked in system tables}
-    C -- yes --> D[scripta_partitioned.sql<br/>delete only matching rows]
-    C -- no --> E[scriptb_nonpartitioned.sql<br/>copy, truncate, copy back]
-    D --> F[Final output<br/>row in maint.maintenance_log]
-    E --> F
-```
+A simple shell + psql script for the DM maintenance, which runs about every 6 months in an outage of at most 1 hour. It cleans a fixed list of large tables (over 100,000 rows), one after another, and stops at the first error.
 
 ## Files
 
-| File | What it does |
+```
+run_maintenance.sh          <- run this. Asks for the connection, holds the static list of tables
+tables/dm.files.sql         <- one plain SQL script per table, named <schema>.<table>.sql
+tables/dm.filerequests.sql
+```
+
+## Run
+
+```bash
+./run_maintenance.sh                    # all tables in the list
+./run_maintenance.sh dm.files           # only the tables you name
+```
+
+It asks only for the database connection:
+
+```
+Host: 10.0.0.5
+Port [5432]:
+Database: datamag
+User: postgres
+Password (press Enter to use ~/.pgpass):
+```
+
+For each table it runs `tables/<table>.sql`. A table without a script is refused before anything runs. Everything is printed and saved to `logs/dm_maintenance_<date_time>.log`:
+
+```
+2026-10-23 08:21:36 START DM maintenance on postgres@10.0.0.5:5432/datamag: dm.files dm.filerequests
+2026-10-23 08:21:36 START  dm.files
+0. Partitions of dm.files and their rules (from the system tables)
+   partition   |        rule         | rows
+ files_active  | FOR VALUES IN ('N') | 2000
+ files_other   | DEFAULT             |    0
+ files_removed | FOR VALUES IN ('Y') | 3000
+1. Check dm.files_active is the partition for is_removed = N
+   check OK: dm.files_active holds only is_removed = N, about 2000 rows
+2. Empty the partition
+dm.files done: partition dm.files_active (is_removed = N) emptied, about 2000 rows removed
+2026-10-23 08:21:36 DONE   dm.files
+2026-10-23 08:21:36 START  dm.filerequests
+0. Before: rows (from statistics), indexes and triggers
+   rows: 5000  indexes: 2  triggers: 0
+1. Copy the rows to keep into dm.maintenance_filerequests_20261023
+   copy OK: 2000 rows
+2. Empty the table
+3. Copy the rows back
+4. After: same rows as the copy, indexes valid, triggers still there
+   check OK: 2000 rows copied back
+dm.filerequests done: kept 2000 rows, removed about 3000 rows, copy in dm.maintenance_filerequests_20261023
+2026-10-23 08:21:36 DONE   dm.filerequests
+2026-10-23 08:21:36 COMPLETED DM maintenance: 2 table(s). Log: logs/dm_maintenance_20261023_082136.log
+```
+
+If a table fails, its changes are undone, the run stops, and the tables after it are not touched:
+
+```
+2026-10-23 08:21:36 START  dm.filerequests
+psql:tables/dm.filerequests.sql:32: ERROR:  cannot truncate a table referenced in a foreign key constraint
+2026-10-23 08:21:36 FAILED dm.filerequests - maintenance stopped, the tables after it were not run (error above)
+```
+
+## What each table script does
+
+The scripts are plain SQL (`ANALYZE`, `SELECT`, `BEGIN`, `LOCK`, `CREATE TABLE ... AS`, `TRUNCATE`, `INSERT`, `COMMIT`) with short `\echo` messages. A check that fails stops the script, and nothing is changed.
+
+**`tables/dm.files.sql`** (partitioned table: empty the partition `is_removed = 'N'`)
+0. `ANALYZE`, then show every partition and its rule from the system tables.
+1. Check that `dm.files` is `LIST (is_removed)` and that `dm.files_active` is the partition `FOR VALUES IN ('N')`.
+2. Lock the partition and `TRUNCATE` it. Then `ANALYZE` again.
+
+**`tables/dm.filerequests.sql`** (normal table: keep `statusid IN (1, 2)`)
+0. `ANALYZE`, then read the rows, indexes and triggers from the system tables.
+1. Lock the table and copy the rows to keep into the dated table `dm.maintenance_filerequests_<yyyymmdd>`. Check the copy.
+2. `TRUNCATE` the table.
+3. Copy the rows back, with every column listed by name.
+4. Check the rows copied back, that the indexes are valid and that the triggers are still there. `COMMIT`, then `ANALYZE`.
+
+## Changing things (every 6 months)
+
+| To... | Do this |
 |---|---|
-| [`main.sql`](main.sql) | The only file you run. It checks the database, asks which table, chooses scripta or scriptb, and logs the result. |
-| [`scripta_partitioned.sql`](scripta_partitioned.sql) | For partitioned tables. It deletes only the rows matching your condition. |
-| [`scriptb_nonpartitioned.sql`](scriptb_nonpartitioned.sql) | For normal tables. It keeps the rows that match your rule: validate, copy, truncate, copy back, validate. |
+| Skip a table | Put `#` in front of its line in the `TABLES` list in `run_maintenance.sh` |
+| Change the rows to keep | Edit the `WHERE` line in step 1 of `tables/dm.filerequests.sql` |
+| Change the partition | Edit the partition name and rule in steps 1 and 2 of `tables/dm.files.sql` |
+| Add a table | Copy a table script to `tables/<schema>.<table>.sql`, change the names, columns and rule, and add the table to `TABLES` |
+| Columns added to a table | Add them to the column lists in steps 1 and 3 of its script |
+
+## Safety
+
+| | |
+|---|---|
+| Static table list | Only the tables in the list, each with its own script, are touched. Nothing is discovered automatically. |
+| One table at a time | Each table runs in one transaction. An error undoes that table's changes and stops the run. |
+| Clear log | START / DONE / FAILED with a timestamp for every table, plus every step and any error |
+| Fits the outage | `lock_timeout` 60 seconds (it never waits forever for a busy table) and `statement_timeout` 55 minutes |
+| No heavy scans | Row numbers come from the system tables (`pg_class`) after `ANALYZE`. Only the copy step reads the table. |
+| Partition checked first | The partition rule is read from the system tables before `TRUNCATE` |
 
 ## Tests
 
-`tests/run_tests.sh` runs 16 scenarios against a TEST database: the normal and partitioned runs, mixed partitions, safety stops, rollbacks, triggers and identity columns, quoted names, and no load on the main table. Before every scenario it resets the dummy data. The latest results are in [`TEST_REPORT.md`](TEST_REPORT.md) and `TEST_REPORT.pdf`: **16 of 16 passed**.
+`tests/run_tests.sh` runs 13 scenarios against a TEST database. Before every scenario it resets the dummy data with `tests/reset_data.sql`. The scenarios cover a full run, a single named table, a table with no script, a wrong connection, a commented-out table, a missing or wrong partition, a foreign key, a wrong keep condition, a second run on the same day, no load on the main table, and a lock timeout. Results are in [`TEST_REPORT.md`](TEST_REPORT.md) and `TEST_REPORT.pdf`.
 
 ```bash
 PGHOST=<server> PGUSER=postgres ./tests/run_tests.sh
 ```
 
-**Warning:** the tests drop and recreate the schemas `dm` and `maint` in `testdb`.
+**Warning:** the tests drop and recreate schema `dm` in `testdb`.
+
+## Before the run
+
+- [ ] A backup is taken and confirmed
+- [ ] Applications are stopped (tables are locked during the run)
+- [ ] The partition names and rules in `tables/` match the production tables
+- [ ] Free disk space for a copy of the kept rows
+- [ ] After checking the result, drop the dated `maintenance_<table>_<date>` tables once they are no longer needed
 
 ## Requirements
 
-- PostgreSQL 12 or later
-- The `psql` client. The scripts use `\prompt` and `\if`, so they don't run in DBeaver or pgAdmin.
-- A user that owns the table, or a superuser (needed for `LOCK`, `TRUNCATE` and `CREATE TABLE`)
-- A backup of the database taken before any run
-
-## Quick start
-
-1. Set your TEST database name at the top of `main.sql` (the default is `testdb`):
-   ```sql
-   SELECT current_database() = 'testdb' AS is_test \gset
-   ```
-2. Run it from this folder and keep a log file:
-   ```bash
-   psql -h <server> -U <user> -d testdb -f main.sql 2>&1 | tee maintenance.log
-   ```
-3. Answer the questions **without** quotes.
-
-**Normal table:** keep `statusid` 1 and 2, remove the rest.
-```
-Schema name [e.g. dm]: dm
-Table name [e.g. filerequests or files]: filerequests
-Normal table. Rows to KEEP [e.g. statusid IN (1, 2)]: statusid IN (1, 2)
-Type YES to continue: YES
-```
-
-**Partitioned table:** remove the rows with `is_removed = 'Y'`.
-```
-Schema name [e.g. dm]: dm
-Table name [e.g. filerequests or files]: files
-Partitioned table. Rows to REMOVE [e.g. is_removed = 'Y']: is_removed = 'Y'
-Type YES to continue: YES
-```
-
-## What each script does
-
-### scriptb: normal table
-
-| Step | Action |
-|---|---|
-| 0 | `ANALYZE`, then record the row estimate, the index count and the trigger count from the system tables |
-| 1 | Lock the table and copy the rows to keep into `<schema>.maintenance_<table>_<yyyymmdd>`. Check the copy. |
-| 2 | `TRUNCATE` the original table |
-| 3 | Copy the rows back, with every column listed by name |
-| 4 | Check the rows copied back match the copy, the indexes are valid and the triggers are present. Then `ANALYZE`. |
-
-### scripta: partitioned table
-
-| Step | Action |
-|---|---|
-| 0 | `ANALYZE`, then show the estimated rows now and rows to remove, from the system tables (`pg_class`, `EXPLAIN`) |
-| 1 | `DELETE` only the rows matching the condition. PostgreSQL only looks in the partitions that can hold them. |
-| 2 | Safety check: if no row at all is left, the condition was too wide (e.g. `1 = 1`), so everything is undone |
-| 3 | `ANALYZE` again |
-
-It works for any kind of partitioning (by list, range or hash). Rows that don't match the condition are never touched, even in a partition that holds both kinds.
-
-`DELETE` frees the space for new rows in the same table, but does not shrink the files on disk. Run `VACUUM` on the table after a large delete. Autovacuum does this later on its own.
-
-## Final output and logging
-
-Each run adds one row to `maint.maintenance_log`, which is created automatically, and shows it at the end:
-
-```
-   table_name    |        rule        | status  |    duration     | message
------------------+--------------------+---------+-----------------+-----------------------------------------------------------------------------
- dm.filerequests | statusid IN (1, 2) | SUCCESS | 00:00:00.016124 | kept 2000, removed about 3000, backup in dm.maintenance_filerequests_20261022
- dm.files        | is_removed = 'Y'   | SUCCESS | 00:00:00.015053 | removed 3000 rows matching (is_removed = 'Y')
-```
-
-When a run fails, `status` is `FAILED` and `message` holds the error. To see past runs:
-
-```sql
-SELECT * FROM maint.maintenance_log ORDER BY log_id DESC;
-```
-
-## Safety
-
-| Protection | How |
-|---|---|
-| TEST database only | `main.sql` stops unless the database name matches |
-| Confirmation | Nothing changes until you type `YES` |
-| All or nothing | Each script is one transaction, so any error undoes everything and no backup table is left behind |
-| No load on the main table | Row numbers come from `pg_class` after `ANALYZE`. The copy check counts the backup table only. The rows copied and copied back are the counts each step reports (`GET DIAGNOSTICS`). |
-| No `SELECT *` | Column names are read from the table definition |
-| Locking | Tables are locked during the run, so nobody changes them halfway |
-| Same-day rerun | Fails safely, because the backup table for today already exists |
-
-Row numbers marked "about" are estimates from the statistics. The exact numbers are the rows copied and the rows copied back.
-
-## Troubleshooting
-
-| Message | Cause | Fix |
-|---|---|---|
-| `STOP: not the TEST database` | Connected to another database | Connect to the TEST database, or set its name in `main.sql` |
-| `STOP: table not found` | Wrong schema or table name | Check the names |
-| `Cancelled - nothing was changed` | You didn't type `YES` | Run again |
-| `The condition removes every row` | The condition matches all rows (probably a typo) | Fix the condition; nothing was changed |
-| `... already exists` | Already run today | Drop `maintenance_<table>_<date>`, or restore the database |
-| `cannot truncate a table referenced in a foreign key constraint` | Another table points to this one | Ask the team; this table can't be truncated |
-| `Copy check failed` / `Check after copy back failed` | A validation didn't match | Nothing was changed. Report the message. |
-
-## Before a real run
-
-- [ ] Tested on a TEST database with a copy of the production data
-- [ ] A full backup was taken and confirmed
-- [ ] Applications using the table are stopped
-- [ ] There is enough free disk space for a copy of the kept rows
-- [ ] The rule (rows to keep, or rows to remove) is agreed with the data owner
-
-## Notes
-
-- Run `scripta` and `scriptb` only through `main.sql`, because they get the table and rule from it.
-- The backup table holds the **kept** rows only. The removed rows are not saved anywhere.
-- Sequences are not reset, so new IDs continue as before.
-- Enabled row triggers fire when the rows are copied back.
+`bash` and `psql`, PostgreSQL 12 or later. A user that owns the tables, or a superuser.
