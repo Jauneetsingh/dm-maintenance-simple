@@ -32,8 +32,11 @@ For each table it runs `tables/<table>.sql`. A table without a script is refused
 ```
 2026-10-24 18:58:00 START DM maintenance on postgres@10.0.0.5:5432/datamag: dm.files dm.filerequests
 2026-10-24 18:58:00 START  dm.files
-2026-10-24 18:58:00   1. Empty the partition dm.files_removed (is_removed = Y)
-dm.files done: partition dm.files_removed emptied
+2026-10-24 18:58:00   1. Condition of partition dm.files_removed (from the database):
+    partition     |      condition
+ dm.files_removed | FOR VALUES IN ('Y')
+2026-10-24 18:58:00   2. Remove rows with is_removed = Y: truncate partition dm.files_removed
+2026-10-24 18:58:00 dm.files done: rows with is_removed = Y removed (partition dm.files_removed truncated)
 2026-10-24 18:58:00 DONE   dm.files (0 s)
 2026-10-24 18:58:00 START  dm.filerequests
 2026-10-24 18:58:00   0. Before: rows (from statistics), indexes and triggers
@@ -61,8 +64,11 @@ psql:tables/dm.filerequests.sql:32: ERROR:  cannot truncate a table referenced i
 
 The scripts are plain SQL (`ANALYZE`, `SELECT`, `BEGIN`, `LOCK`, `CREATE TABLE ... AS`, `TRUNCATE`, `INSERT`, `COMMIT`) with short `\echo` messages. A check that fails stops the script, and nothing is changed.
 
-**`tables/dm.files.sql`** (partitioned table: empty the partition `is_removed = 'Y'`)
-1. `TRUNCATE TABLE dm.files_removed;`: the partition to empty is hard-coded. It is the partition defined `FOR VALUES IN ('Y')`, so it holds only `is_removed = 'Y'` rows. Then `ANALYZE`.
+**`tables/dm.files.sql`** (partitioned table: remove rows with `is_removed = 'Y'`)
+
+The condition is written at the top of the script: `is_removed = 'Y'` is removed by truncating the partition `dm.files_removed`, which is defined `FOR VALUES IN ('Y')` and so holds only those rows. This is the same approach as the old Oracle `ALTER TABLE ... TRUNCATE PARTITION p_removed`.
+1. Print the partition's condition from the database into the log, e.g. `FOR VALUES IN ('Y')`.
+2. `TRUNCATE TABLE dm.files_removed;   -- condition: is_removed = 'Y'`, then `ANALYZE`.
 
 **`tables/dm.filerequests.sql`** (normal table: keep `statusid IN (1, 2)`)
 0. `ANALYZE`, then read the rows, indexes and triggers from the system tables.
