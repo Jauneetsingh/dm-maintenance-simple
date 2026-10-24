@@ -110,6 +110,30 @@ PGHOST=<server> PGUSER=postgres ./tests/run_tests.sh
 
 **Warning:** the tests drop and recreate schema `dm` in `testdb`.
 
+## Repeating tests: save and restore the test data
+
+The maintenance removes data, so to test it again the tables must be put back first. Two scripts do this on a **TEST** database. Both ask the same connection questions and use the same table list as `run_maintenance.sh`, or the tables you name.
+
+```bash
+./tests/save_test_data.sh        # once, before the first run: copies each table into schema test_snapshot
+./run_maintenance.sh             # the test run
+./tests/restore_test_data.sh     # puts every table back exactly as saved; repeat the run as often as needed
+```
+
+| Script | What it does |
+|---|---|
+| `tests/save_test_data.sh` | `CREATE TABLE test_snapshot.<schema>_<table> AS SELECT * FROM <table>` for each table. A table already saved is **not** saved again, so a snapshot can't be overwritten by cleaned data. To save again, drop that snapshot table first. |
+| `tests/restore_test_data.sh` | For each table, in one transaction: `TRUNCATE`, then `INSERT ... SELECT *` from the snapshot, then `COMMIT` and `ANALYZE`. It also drops the dated `maintenance_<table>_<date>` tables, so the next run works on the same day. Finally it checks the row count against the snapshot. |
+
+```
+2026-10-24 18:55:09 RESTORE test data on postgres@10.0.0.5:5432/testdb: dm.files dm.filerequests
+  dm.files: 5000 rows restored, snapshot has 5000 - OK
+  dm.filerequests: 5000 rows restored, snapshot has 5000 - OK
+2026-10-24 18:55:10 RESTORE done
+```
+
+The snapshot is a full copy, so it needs about as much disk space as the tables. For a whole-database reset, a pgBackRest restore works too.
+
 ## Before the run
 
 - [ ] A backup is taken and confirmed
