@@ -5,7 +5,7 @@
 | Scripts | `run_maintenance.sh`, `tables/dm.files.sql`, `tables/dm.filerequests.sql` |
 | Server | Local Docker test container (PostgreSQL 16.15 (Debian)) |
 | Database | `testdb` |
-| Run | 2026-10-24 13:28:00 to 2026-10-24 13:29:38 (server time) |
+| Run | 2026-10-24 13:47:13 to 2026-10-24 13:48:50 (server time) |
 | Result | **13 of 13 scenarios passed** |
 
 Before every scenario `tests/reset_data.sql` recreates the dummy data, and any extra data for that scenario is inserted. `run_maintenance.sh` is then run, answering only the connection questions, and the real result is checked with SQL queries. Rerun everything with:
@@ -42,16 +42,16 @@ PGHOST=<server> PGUSER=postgres ./tests/run_tests.sh
 - **Checked (files_active | files_removed | filerequests | wrong statusid | rows in copy | exit code):** expected `0|3000|2000|0|2000|0`, actual `0|3000|2000|0|2000|0`, exit code 0
 
 ```
-2026-10-24 18:58:00 START DM maintenance on postgres@localhost:55432/testdb: dm.files dm.filerequests
-2026-10-24 18:58:00 START  dm.files
+2026-10-24 19:17:13 START DM maintenance on postgres@localhost:55432/testdb: dm.files dm.filerequests
+2026-10-24 19:17:13 START  dm.files
 dm.files done: partition dm.files_active emptied
-2026-10-24 18:58:00 DONE   dm.files (0 s)
-2026-10-24 18:58:00 START  dm.filerequests
+2026-10-24 19:17:13 DONE   dm.files (0 s)
+2026-10-24 19:17:13 START  dm.filerequests
 copy OK: 2000 rows
 check OK: 2000 rows copied back
 dm.filerequests done: kept 2000 rows, removed about 3000 rows, copy in dm.maintenance_filerequests_20261024
-2026-10-24 18:58:00 DONE   dm.filerequests (0 s)
-2026-10-24 18:58:00 COMPLETED DM maintenance: 2 table(s) in 0 s. Log: logs/dm_maintenance_20261024_185800.log
+2026-10-24 19:17:13 DONE   dm.filerequests (0 s)
+2026-10-24 19:17:13 COMPLETED DM maintenance: 2 table(s) in 0 s. Log: logs/dm_maintenance_20261024_191713.log
 ```
 
 ### S02. Table named on the command line: only that one runs: PASS
@@ -62,13 +62,13 @@ dm.filerequests done: kept 2000 rows, removed about 3000 rows, copy in dm.mainte
 - **Checked (filerequests | files_active | dm.files started | exit code):** expected `2000|2000|no|0`, actual `2000|2000|no|0`, exit code 0
 
 ```
-2026-10-24 18:58:01 START DM maintenance on postgres@localhost:55432/testdb: dm.filerequests
-2026-10-24 18:58:01 START  dm.filerequests
+2026-10-24 19:17:13 START DM maintenance on postgres@localhost:55432/testdb: dm.filerequests
+2026-10-24 19:17:13 START  dm.filerequests
 copy OK: 2000 rows
 check OK: 2000 rows copied back
 dm.filerequests done: kept 2000 rows, removed about 3000 rows, copy in dm.maintenance_filerequests_20261024
-2026-10-24 18:58:01 DONE   dm.filerequests (0 s)
-2026-10-24 18:58:01 COMPLETED DM maintenance: 1 table(s) in 0 s. Log: logs/dm_maintenance_20261024_185801.log
+2026-10-24 19:17:13 DONE   dm.filerequests (0 s)
+2026-10-24 19:17:13 COMPLETED DM maintenance: 1 table(s) in 0 s. Log: logs/dm_maintenance_20261024_191713.log
 ```
 
 ### S03. Table without a script is refused, nothing runs: PASS
@@ -90,7 +90,7 @@ ERROR: no script tables/dm.no_such_table.sql for table dm.no_such_table - nothin
 - **Checked (message shown | filerequests | exit code):** expected `yes|5000|1`, actual `yes|5000|1`, exit code 1
 
 ```
-2026-10-24 18:58:01 ERROR: cannot connect to postgres@localhost:55432/no_such_db (details in logs/dm_maintenance_20261024_185801.log)
+2026-10-24 19:17:14 ERROR: cannot connect to postgres@localhost:55432/no_such_db (details in logs/dm_maintenance_20261024_191714.log)
 ```
 
 ### S05. Commented-out table is not touched: PASS
@@ -101,11 +101,11 @@ ERROR: no script tables/dm.no_such_table.sql for table dm.no_such_table - nothin
 - **Checked (files_active | filerequests | filerequests started | COMPLETED 1 table):** expected `0|5000|no|yes`, actual `0|5000|no|yes`, exit code 0
 
 ```
-2026-10-24 18:58:01 START DM maintenance on postgres@localhost:55432/testdb: dm.files
-2026-10-24 18:58:01 START  dm.files
+2026-10-24 19:17:14 START DM maintenance on postgres@localhost:55432/testdb: dm.files
+2026-10-24 19:17:14 START  dm.files
 dm.files done: partition dm.files_active emptied
-2026-10-24 18:58:01 DONE   dm.files (0 s)
-2026-10-24 18:58:01 COMPLETED DM maintenance: 1 table(s) in 0 s. Log: logs/dm_maintenance_20261024_185801.log
+2026-10-24 19:17:14 DONE   dm.files (0 s)
+2026-10-24 19:17:14 COMPLETED DM maintenance: 1 table(s) in 0 s. Log: logs/dm_maintenance_20261024_191714.log
 ```
 
 ### S06. Partition missing: run stops, next table not run: PASS
@@ -116,10 +116,10 @@ dm.files done: partition dm.files_active emptied
 - **Checked (message shown | FAILED logged | next table started | filerequests | exit code):** expected `yes|yes|no|5000|1`, actual `yes|yes|no|5000|1`, exit code 1
 
 ```
-2026-10-24 18:58:01 START DM maintenance on postgres@localhost:55432/testdb: dm.files dm.filerequests
-2026-10-24 18:58:01 START  dm.files
+2026-10-24 19:17:14 START DM maintenance on postgres@localhost:55432/testdb: dm.files dm.filerequests
+2026-10-24 19:17:14 START  dm.files
 ERROR:  relation "dm.files_active" does not exist
-2026-10-24 18:58:01 FAILED dm.files after 0 s - maintenance stopped, the tables after it were not run (error above)
+2026-10-24 19:17:14 FAILED dm.files after 0 s - maintenance stopped, the tables after it were not run (error above)
 ```
 
 ### S07. Hard-coded partition: exactly the named partition is emptied: PASS
@@ -130,11 +130,11 @@ ERROR:  relation "dm.files_active" does not exist
 - **Checked (files_removed | files_active | files_other | exit code):** expected `0|2000|0|0`, actual `0|2000|0|0`, exit code 0
 
 ```
-2026-10-24 18:58:02 START DM maintenance on postgres@localhost:55432/testdb: dm.files
-2026-10-24 18:58:02 START  dm.files
+2026-10-24 19:17:14 START DM maintenance on postgres@localhost:55432/testdb: dm.files
+2026-10-24 19:17:14 START  dm.files
 dm.files done: partition dm.files_removed emptied
-2026-10-24 18:58:02 DONE   dm.files (0 s)
-2026-10-24 18:58:02 COMPLETED DM maintenance: 1 table(s) in 0 s. Log: logs/dm_maintenance_20261024_185802.log
+2026-10-24 19:17:14 DONE   dm.files (0 s)
+2026-10-24 19:17:14 COMPLETED DM maintenance: 1 table(s) in 0 s. Log: logs/dm_maintenance_20261024_191714.log
 ```
 
 ### S08. Foreign key: TRUNCATE fails, table rolled back: PASS
@@ -145,11 +145,11 @@ dm.files done: partition dm.files_removed emptied
 - **Checked (message shown | filerequests | copy table | exit code):** expected `yes|5000|no backup|1`, actual `yes|5000|no backup|1`, exit code 1
 
 ```
-2026-10-24 18:58:02 START DM maintenance on postgres@localhost:55432/testdb: dm.filerequests
-2026-10-24 18:58:02 START  dm.filerequests
+2026-10-24 19:17:14 START DM maintenance on postgres@localhost:55432/testdb: dm.filerequests
+2026-10-24 19:17:14 START  dm.filerequests
 copy OK: 2000 rows
 ERROR:  cannot truncate a table referenced in a foreign key constraint
-2026-10-24 18:58:02 FAILED dm.filerequests after 0 s - maintenance stopped, the tables after it were not run (error above)
+2026-10-24 19:17:15 FAILED dm.filerequests after 1 s - maintenance stopped, the tables after it were not run (error above)
 ```
 
 ### S09. Keep condition matching 0 rows is refused: PASS
@@ -160,10 +160,10 @@ ERROR:  cannot truncate a table referenced in a foreign key constraint
 - **Checked (message shown | filerequests | copy table | exit code):** expected `yes|5000|no backup|1`, actual `yes|5000|no backup|1`, exit code 1
 
 ```
-2026-10-24 18:58:02 START DM maintenance on postgres@localhost:55432/testdb: dm.filerequests
-2026-10-24 18:58:02 START  dm.filerequests
+2026-10-24 19:17:15 START DM maintenance on postgres@localhost:55432/testdb: dm.filerequests
+2026-10-24 19:17:15 START  dm.filerequests
 ERROR:  Copy check failed - nothing was changed
-2026-10-24 18:58:02 FAILED dm.filerequests after 0 s - maintenance stopped, the tables after it were not run (error above)
+2026-10-24 19:17:15 FAILED dm.filerequests after 0 s - maintenance stopped, the tables after it were not run (error above)
 ```
 
 ### S10. Invalid keep condition is rolled back: PASS
@@ -174,10 +174,10 @@ ERROR:  Copy check failed - nothing was changed
 - **Checked (message shown | filerequests | copy table | exit code):** expected `yes|5000|no backup|1`, actual `yes|5000|no backup|1`, exit code 1
 
 ```
-2026-10-24 18:58:02 START DM maintenance on postgres@localhost:55432/testdb: dm.filerequests
-2026-10-24 18:58:02 START  dm.filerequests
+2026-10-24 19:17:15 START DM maintenance on postgres@localhost:55432/testdb: dm.filerequests
+2026-10-24 19:17:15 START  dm.filerequests
 ERROR:  column "no_such_column" does not exist
-2026-10-24 18:58:02 FAILED dm.filerequests after 0 s - maintenance stopped, the tables after it were not run (error above)
+2026-10-24 19:17:15 FAILED dm.filerequests after 0 s - maintenance stopped, the tables after it were not run (error above)
 ```
 
 ### S11. Second run on the same day fails safely: PASS
@@ -188,10 +188,10 @@ ERROR:  column "no_such_column" does not exist
 - **Checked (message shown | filerequests | rows in copy | exit code):** expected `yes|2000|2000|1`, actual `yes|2000|2000|1`, exit code 1
 
 ```
-2026-10-24 18:58:02 START DM maintenance on postgres@localhost:55432/testdb: dm.filerequests
-2026-10-24 18:58:03 START  dm.filerequests
+2026-10-24 19:17:15 START DM maintenance on postgres@localhost:55432/testdb: dm.filerequests
+2026-10-24 19:17:15 START  dm.filerequests
 ERROR:  relation "maintenance_filerequests_20261024" already exists
-2026-10-24 18:58:03 FAILED dm.filerequests after 0 s - maintenance stopped, the tables after it were not run (error above)
+2026-10-24 19:17:15 FAILED dm.filerequests after 0 s - maintenance stopped, the tables after it were not run (error above)
 ```
 
 ### S12. No count(*) on the main table: PASS
@@ -202,13 +202,13 @@ ERROR:  relation "maintenance_filerequests_20261024" already exists
 - **Checked (full reads | filerequests):** expected `3|2000`, actual `3|2000`, exit code 0
 
 ```
-2026-10-24 18:58:05 START DM maintenance on postgres@localhost:55432/testdb: dm.filerequests
-2026-10-24 18:58:05 START  dm.filerequests
+2026-10-24 19:17:17 START DM maintenance on postgres@localhost:55432/testdb: dm.filerequests
+2026-10-24 19:17:17 START  dm.filerequests
 copy OK: 2000 rows
 check OK: 2000 rows copied back
 dm.filerequests done: kept 2000 rows, removed about 3000 rows, copy in dm.maintenance_filerequests_20261024
-2026-10-24 18:58:05 DONE   dm.filerequests (0 s)
-2026-10-24 18:58:05 COMPLETED DM maintenance: 1 table(s) in 0 s. Log: logs/dm_maintenance_20261024_185805.log
+2026-10-24 19:17:18 DONE   dm.filerequests (1 s)
+2026-10-24 19:17:18 COMPLETED DM maintenance: 1 table(s) in 1 s. Log: logs/dm_maintenance_20261024_191717.log
 ```
 
 ### S13. Table in use: lock timeout after 60 s: PASS
@@ -219,10 +219,10 @@ dm.filerequests done: kept 2000 rows, removed about 3000 rows, copy in dm.mainte
 - **Checked (message shown | filerequests | copy table | exit code):** expected `yes|5000|no backup|1`, actual `yes|5000|no backup|1`, exit code 1
 
 ```
-2026-10-24 18:58:10 START DM maintenance on postgres@localhost:55432/testdb: dm.filerequests
-2026-10-24 18:58:10 START  dm.filerequests
+2026-10-24 19:17:23 START DM maintenance on postgres@localhost:55432/testdb: dm.filerequests
+2026-10-24 19:17:23 START  dm.filerequests
 ERROR:  canceling statement due to lock timeout
-2026-10-24 18:59:10 FAILED dm.filerequests after 60 s - maintenance stopped, the tables after it were not run (error above)
+2026-10-24 19:18:23 FAILED dm.filerequests after 60 s - maintenance stopped, the tables after it were not run (error above)
 ```
 
 ## Observations
@@ -235,4 +235,4 @@ ERROR:  canceling statement due to lock timeout
 
 - **Production-size data:** these runs use 5,000 rows. Timing for the outage window must be measured on a production-size copy.
 - **Generated or GENERATED ALWAYS identity columns:** with `SELECT *` such a table fails at the copy-back step and is rolled back; not in the current table list.
-- **Production partition names:** the partition to empty is hard-coded (`dm.files_active` for 'N') and not checked. Check the name against production before the run; `\d+ dm.files` prints every partition and its rule in the log.
+- **Production partition names:** the partition to empty is hard-coded (`dm.files_active` for 'N') and not checked. Check the name against production before the run, e.g. with `\d+ dm.files` in psql.

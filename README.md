@@ -32,13 +32,6 @@ For each table it runs `tables/<table>.sql`. A table without a script is refused
 ```
 2026-10-24 18:58:00 START DM maintenance on postgres@10.0.0.5:5432/datamag: dm.files dm.filerequests
 2026-10-24 18:58:00 START  dm.files
-2026-10-24 18:58:00   0. Partitions of dm.files and their rules (for the log)
-                  Partitioned table "dm.files"
-   ...
-Partition key: LIST (is_removed)
-Partitions: dm.files_active FOR VALUES IN ('N'),
-            dm.files_removed FOR VALUES IN ('Y'),
-            dm.files_other DEFAULT
 2026-10-24 18:58:00   1. Empty the partition dm.files_active (is_removed = N)
 dm.files done: partition dm.files_active emptied
 2026-10-24 18:58:00 DONE   dm.files (0 s)
@@ -69,7 +62,6 @@ psql:tables/dm.filerequests.sql:32: ERROR:  cannot truncate a table referenced i
 The scripts are plain SQL (`ANALYZE`, `SELECT`, `BEGIN`, `LOCK`, `CREATE TABLE ... AS`, `TRUNCATE`, `INSERT`, `COMMIT`) with short `\echo` messages. A check that fails stops the script, and nothing is changed.
 
 **`tables/dm.files.sql`** (partitioned table: empty the partition `is_removed = 'N'`)
-0. Show the table, its partition key and every partition with its rule (`\d+ dm.files`), for the log.
 1. `TRUNCATE TABLE dm.files_active;`: the partition to empty is hard-coded. It is the partition defined `FOR VALUES IN ('N')`, so it holds only `is_removed = 'N'` rows. Then `ANALYZE`.
 
 **`tables/dm.filerequests.sql`** (normal table: keep `statusid IN (1, 2)`)
@@ -97,7 +89,7 @@ The scripts are plain SQL (`ANALYZE`, `SELECT`, `BEGIN`, `LOCK`, `CREATE TABLE .
 | Clear log | START / DONE / FAILED for every table with its duration, a timestamp on every step, and any error |
 | Busy table | `lock_timeout` 60 seconds: if another session is using a table, the run fails after 60 seconds instead of waiting forever |
 | No heavy scans | Row numbers come from the system tables (`pg_class`) after `ANALYZE`. Only the copy step reads the table. |
-| Hard-coded partition | `dm.files.sql` empties exactly the partition named in its `TRUNCATE` line, without a check. `\d+` prints every partition and its rule in the log, so check the name against the database before the run. |
+| Hard-coded partition | `dm.files.sql` empties exactly the partition named in its `TRUNCATE` line, without a check. Check the name against the database before the run, e.g. with `\d+ dm.files` in psql. |
 | `SELECT *` | The copy is made from the table in the same run, so the columns always match. A table with a generated column or a `GENERATED ALWAYS` identity column fails at the copy-back step and is rolled back. |
 
 ## Tests
@@ -145,3 +137,7 @@ The snapshot is a full copy, so it needs about as much disk space as the tables.
 ## Requirements
 
 `bash` and `psql`, PostgreSQL 12 or later. A user that owns the tables, or a superuser.
+
+## Performance
+
+[`PARALLELISM_FINDINGS.md`](PARALLELISM_FINDINGS.md) has the results of testing PostgreSQL parallel workers on a 10-million-row table. Parallel workers help very little. Dropping the indexes before the copy-back and rebuilding them afterwards was about 2.5x faster. The scripts have not been changed to do this yet.
