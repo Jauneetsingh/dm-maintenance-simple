@@ -85,10 +85,10 @@ s_S06() { reset; Q "DROP TABLE dm.files_active" >/dev/null; run S06 "$(copy S06)
   echo "$(has S06 'relation "dm.files_active" does not exist')|$(has S06 'FAILED dm.files')|$(has S06 'START  dm.filerequests')|$(rows dm.filerequests)|$(code S06)"; }
 scenario S06 "Partition missing: run stops, next table not run" "yes|yes|no|5000|1"
 
-# S07 script points at the wrong partition (files_removed holds 'Y'): rule check fails, nothing emptied
+# S07 partition is hard-coded: change the name in the script and that partition is emptied (no check)
 s_S07() { reset; local w; w=$(copy S07); sed -i '' 's/files_active/files_removed/g' "$w/tables/dm.files.sql"; run S07 "$w" dm.files
-  echo "$(has S07 'is not the partition for is_removed = N')|$(rows dm.files_removed)|$(rows dm.files_active)|$(code S07)"; }
-scenario S07 "Wrong partition in the script: rule check stops it" "yes|3000|2000|1"
+  echo "$(rows dm.files_removed)|$(rows dm.files_active)|$(rows dm.files_other)|$(code S07)"; }
+scenario S07 "Hard-coded partition: exactly the named partition is emptied" "0|2000|0|0"
 
 # S08 foreign key to dm.filerequests: TRUNCATE fails, table rolled back
 s_S08() { reset; Q "CREATE TABLE dm.child (requestid numeric REFERENCES dm.filerequests)" >/dev/null; run S08 "$(copy S08)" dm.filerequests

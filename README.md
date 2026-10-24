@@ -32,17 +32,15 @@ For each table it runs `tables/<table>.sql`. A table without a script is refused
 ```
 2026-10-23 08:45:20 START DM maintenance on postgres@10.0.0.5:5432/datamag: dm.files dm.filerequests
 2026-10-23 08:45:20 START  dm.files
-0. Partitions of dm.files and their rules
+0. Partitions of dm.files and their rules (for the log)
                   Partitioned table "dm.files"
    ...
 Partition key: LIST (is_removed)
 Partitions: dm.files_active FOR VALUES IN ('N'),
             dm.files_removed FOR VALUES IN ('Y'),
             dm.files_other DEFAULT
-1. Check dm.files_active is the partition for is_removed = N
-   check OK: about 2000 rows
-2. Empty the partition
-dm.files done: partition dm.files_active (is_removed = N) emptied, about 2000 rows removed
+1. Empty the partition dm.files_active (is_removed = N)
+dm.files done: partition dm.files_active emptied
 2026-10-23 08:45:20 DONE   dm.files
 2026-10-23 08:45:20 START  dm.filerequests
 0. Before: rows (from statistics), indexes and triggers
@@ -71,9 +69,8 @@ psql:tables/dm.filerequests.sql:32: ERROR:  cannot truncate a table referenced i
 The scripts are plain SQL (`ANALYZE`, `SELECT`, `BEGIN`, `LOCK`, `CREATE TABLE ... AS`, `TRUNCATE`, `INSERT`, `COMMIT`) with short `\echo` messages. A check that fails stops the script, and nothing is changed.
 
 **`tables/dm.files.sql`** (partitioned table: empty the partition `is_removed = 'N'`)
-0. Show the table, its partition key and every partition with its rule (`\d+ dm.files`).
-1. `ANALYZE`, then check that `dm.files_active` is the partition `FOR VALUES IN ('N')`.
-2. Lock the partition and `TRUNCATE` it. Then `ANALYZE` again.
+0. Show the table, its partition key and every partition with its rule (`\d+ dm.files`), for the log.
+1. `TRUNCATE TABLE dm.files_active;`: the partition to empty is hard-coded. It is the partition defined `FOR VALUES IN ('N')`, so it holds only `is_removed = 'N'` rows. Then `ANALYZE`.
 
 **`tables/dm.filerequests.sql`** (normal table: keep `statusid IN (1, 2)`)
 0. `ANALYZE`, then read the rows, indexes and triggers from the system tables.
@@ -88,7 +85,7 @@ The scripts are plain SQL (`ANALYZE`, `SELECT`, `BEGIN`, `LOCK`, `CREATE TABLE .
 |---|---|
 | Skip a table | Put `#` in front of its line in the `TABLES` list in `run_maintenance.sh` |
 | Change the rows to keep | Edit the `WHERE` line in step 1 of `tables/dm.filerequests.sql` |
-| Change the partition | Edit the partition name and rule in steps 1 and 2 of `tables/dm.files.sql` |
+| Change the partition | Edit the partition name in the `TRUNCATE` line of `tables/dm.files.sql` |
 | Add a table | Copy a table script to `tables/<schema>.<table>.sql`, change the table name and the rule (`WHERE` line, or partition name and value), and add the table to `TABLES` |
 
 ## Safety
@@ -100,12 +97,12 @@ The scripts are plain SQL (`ANALYZE`, `SELECT`, `BEGIN`, `LOCK`, `CREATE TABLE .
 | Clear log | START / DONE / FAILED with a timestamp for every table, plus every step and any error |
 | Fits the outage | `lock_timeout` 60 seconds (it never waits forever for a busy table) and `statement_timeout` 55 minutes |
 | No heavy scans | Row numbers come from the system tables (`pg_class`) after `ANALYZE`. Only the copy step reads the table. |
-| Partition checked first | The partition rule is read from the system tables before `TRUNCATE` |
+| Hard-coded partition | `dm.files.sql` empties exactly the partition named in its `TRUNCATE` line, without a check. `\d+` prints every partition and its rule in the log, so check the name against the database before the run. |
 | `SELECT *` | The copy is made from the table in the same run, so the columns always match. A table with a generated column or a `GENERATED ALWAYS` identity column fails at the copy-back step and is rolled back. |
 
 ## Tests
 
-`tests/run_tests.sh` runs 13 scenarios against a TEST database. Before every scenario it resets the dummy data with `tests/reset_data.sql`. The scenarios cover a full run, a single named table, a table with no script, a wrong connection, a commented-out table, a missing or wrong partition, a foreign key, a wrong keep condition, a second run on the same day, no load on the main table, and a lock timeout. Results are in [`TEST_REPORT.md`](TEST_REPORT.md) and `TEST_REPORT.pdf`.
+`tests/run_tests.sh` runs 13 scenarios against a TEST database. Before every scenario it resets the dummy data with `tests/reset_data.sql`. The scenarios cover a full run, a single named table, a table with no script, a wrong connection, a commented-out table, a missing partition, the hard-coded partition, a foreign key, a wrong keep condition, a second run on the same day, no load on the main table, and a lock timeout. Results are in [`TEST_REPORT.md`](TEST_REPORT.md) and `TEST_REPORT.pdf`.
 
 ```bash
 PGHOST=<server> PGUSER=postgres ./tests/run_tests.sh
