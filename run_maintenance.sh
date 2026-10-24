@@ -13,7 +13,7 @@ cd "$(dirname "$0")"
 # The steps for each table are in tables/<table>.sql
 # ---------------------------------------------------------------------------
 TABLES=(
-  dm.files             # partitioned: empty the partition is_removed = 'N'
+  dm.files             # partitioned: empty the partition is_removed = 'Y'
   dm.filerequests      # normal: keep statusid IN (1, 2)
 )
 [[ $# -gt 0 ]] && TABLES=("$@")     # tables named on the command line replace the list

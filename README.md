@@ -32,8 +32,8 @@ For each table it runs `tables/<table>.sql`. A table without a script is refused
 ```
 2026-10-24 18:58:00 START DM maintenance on postgres@10.0.0.5:5432/datamag: dm.files dm.filerequests
 2026-10-24 18:58:00 START  dm.files
-2026-10-24 18:58:00   1. Empty the partition dm.files_active (is_removed = N)
-dm.files done: partition dm.files_active emptied
+2026-10-24 18:58:00   1. Empty the partition dm.files_removed (is_removed = Y)
+dm.files done: partition dm.files_removed emptied
 2026-10-24 18:58:00 DONE   dm.files (0 s)
 2026-10-24 18:58:00 START  dm.filerequests
 2026-10-24 18:58:00   0. Before: rows (from statistics), indexes and triggers
@@ -61,8 +61,8 @@ psql:tables/dm.filerequests.sql:32: ERROR:  cannot truncate a table referenced i
 
 The scripts are plain SQL (`ANALYZE`, `SELECT`, `BEGIN`, `LOCK`, `CREATE TABLE ... AS`, `TRUNCATE`, `INSERT`, `COMMIT`) with short `\echo` messages. A check that fails stops the script, and nothing is changed.
 
-**`tables/dm.files.sql`** (partitioned table: empty the partition `is_removed = 'N'`)
-1. `TRUNCATE TABLE dm.files_active;`: the partition to empty is hard-coded. It is the partition defined `FOR VALUES IN ('N')`, so it holds only `is_removed = 'N'` rows. Then `ANALYZE`.
+**`tables/dm.files.sql`** (partitioned table: empty the partition `is_removed = 'Y'`)
+1. `TRUNCATE TABLE dm.files_removed;`: the partition to empty is hard-coded. It is the partition defined `FOR VALUES IN ('Y')`, so it holds only `is_removed = 'Y'` rows. Then `ANALYZE`.
 
 **`tables/dm.filerequests.sql`** (normal table: keep `statusid IN (1, 2)`)
 0. `ANALYZE`, then read the rows, indexes and triggers from the system tables.

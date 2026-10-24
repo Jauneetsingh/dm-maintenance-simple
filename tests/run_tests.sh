@@ -55,20 +55,20 @@ D=$(Q "SELECT to_char(now(), 'YYYYMMDD')")
 echo "Server: $(Q "SELECT split_part(version(), ' on ', 1)")  database: $DB  date: $D"
 Q "SELECT now()::timestamp(0)" > "$OUT/started_at"
 
-# S01 full run of the static list: dm.files partition 'N' emptied, dm.filerequests keeps statusid 1, 2
+# S01 full run of the static list: dm.files partition 'Y' emptied, dm.filerequests keeps statusid 1, 2
 s_S01() { reset; run S01 "$(copy S01)"
-  echo "$(rows dm.files_active)|$(rows dm.files_removed)|$(rows dm.filerequests)|$(Q "SELECT count(*) FROM dm.filerequests WHERE statusid NOT IN (1, 2)")|$(rows dm.maintenance_filerequests_$D)|$(code S01)"; }
-scenario S01 "Full run: partition N emptied, filerequests keeps statusid 1, 2" "0|3000|2000|0|2000|0"
+  echo "$(rows dm.files_removed)|$(rows dm.files_active)|$(rows dm.filerequests)|$(Q "SELECT count(*) FROM dm.filerequests WHERE statusid NOT IN (1, 2)")|$(rows dm.maintenance_filerequests_$D)|$(code S01)"; }
+scenario S01 "Full run: partition Y emptied, filerequests keeps statusid 1, 2" "0|2000|2000|0|2000|0"
 
 # S02 one table named on the command line: only that table is done
 s_S02() { reset; run S02 "$(copy S02)" dm.filerequests
-  echo "$(rows dm.filerequests)|$(rows dm.files_active)|$(has S02 'START  dm.files')|$(code S02)"; }
-scenario S02 "Table named on the command line: only that one runs" "2000|2000|no|0"
+  echo "$(rows dm.filerequests)|$(rows dm.files_removed)|$(has S02 'START  dm.files')|$(code S02)"; }
+scenario S02 "Table named on the command line: only that one runs" "2000|3000|no|0"
 
 # S03 table named that has no script in tables/
 s_S03() { reset; run S03 "$(copy S03)" dm.no_such_table
-  echo "$(has S03 'ERROR: no script tables/dm.no_such_table.sql')|$(rows dm.filerequests)|$(rows dm.files_active)|$(code S03)"; }
-scenario S03 "Table without a script is refused, nothing runs" "yes|5000|2000|1"
+  echo "$(has S03 'ERROR: no script tables/dm.no_such_table.sql')|$(rows dm.filerequests)|$(rows dm.files_removed)|$(code S03)"; }
+scenario S03 "Table without a script is refused, nothing runs" "yes|5000|3000|1"
 
 # S04 wrong database name in the connection prompt
 s_S04() { reset; DBNAME=no_such_db run S04 "$(copy S04)"
@@ -77,18 +77,18 @@ scenario S04 "Connection error is reported, nothing runs" "yes|5000|1"
 
 # S05 table commented out of the list: only dm.files is done
 s_S05() { reset; local w; w=$(copy S05); sed -i '' 's/^  dm.filerequests /# dm.filerequests /' "$w/run_maintenance.sh"; run S05 "$w"
-  echo "$(rows dm.files_active)|$(rows dm.filerequests)|$(has S05 'START  dm.filerequests')|$(has S05 'COMPLETED DM maintenance: 1 table(s)')"; }
+  echo "$(rows dm.files_removed)|$(rows dm.filerequests)|$(has S05 'START  dm.filerequests')|$(has S05 'COMPLETED DM maintenance: 1 table(s)')"; }
 scenario S05 "Commented-out table is not touched" "0|5000|no|yes"
 
-# S06 partition for 'N' does not exist: first table fails, run stops, next table not run
-s_S06() { reset; Q "DROP TABLE dm.files_active" >/dev/null; run S06 "$(copy S06)"
-  echo "$(has S06 'relation "dm.files_active" does not exist')|$(has S06 'FAILED dm.files')|$(has S06 'START  dm.filerequests')|$(rows dm.filerequests)|$(code S06)"; }
+# S06 partition for 'Y' does not exist: first table fails, run stops, next table not run
+s_S06() { reset; Q "DROP TABLE dm.files_removed" >/dev/null; run S06 "$(copy S06)"
+  echo "$(has S06 'relation "dm.files_removed" does not exist')|$(has S06 'FAILED dm.files')|$(has S06 'START  dm.filerequests')|$(rows dm.filerequests)|$(code S06)"; }
 scenario S06 "Partition missing: run stops, next table not run" "yes|yes|no|5000|1"
 
 # S07 partition is hard-coded: change the name in the script and that partition is emptied (no check)
-s_S07() { reset; local w; w=$(copy S07); sed -i '' 's/files_active/files_removed/g' "$w/tables/dm.files.sql"; run S07 "$w" dm.files
-  echo "$(rows dm.files_removed)|$(rows dm.files_active)|$(rows dm.files_other)|$(code S07)"; }
-scenario S07 "Hard-coded partition: exactly the named partition is emptied" "0|2000|0|0"
+s_S07() { reset; local w; w=$(copy S07); sed -i '' 's/files_removed/files_active/g' "$w/tables/dm.files.sql"; run S07 "$w" dm.files
+  echo "$(rows dm.files_active)|$(rows dm.files_removed)|$(rows dm.files_other)|$(code S07)"; }
+scenario S07 "Hard-coded partition: exactly the named partition is emptied" "0|3000|0|0"
 
 # S08 foreign key to dm.filerequests: TRUNCATE fails, table rolled back
 s_S08() { reset; Q "CREATE TABLE dm.child (requestid numeric REFERENCES dm.filerequests)" >/dev/null; run S08 "$(copy S08)" dm.filerequests
