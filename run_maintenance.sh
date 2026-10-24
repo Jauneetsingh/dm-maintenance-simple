@@ -33,7 +33,7 @@ read -rp "User: " PGUSER
 read -rsp "Password (press Enter to use ~/.pgpass): " password; echo
 [[ -n "$password" ]] && export PGPASSWORD="$password"
 export PGHOST PGPORT PGDATABASE PGUSER
-export PGOPTIONS="-c lock_timeout=60s -c statement_timeout=55min"   # never wait forever; fit the 1-hour outage
+export PGOPTIONS="-c lock_timeout=60s"   # if a table is in use, fail after 60 seconds instead of waiting forever
 
 mkdir -p logs
 LOG="logs/dm_maintenance_$(date +%Y%m%d_%H%M%S).log"
@@ -47,13 +47,15 @@ fi
 
 # Run the tables one after another. Stop at the first error.
 log "START DM maintenance on $PGUSER@$PGHOST:$PGPORT/$PGDATABASE: ${TABLES[*]}"
+run_start=$SECONDS
 for t in "${TABLES[@]}"; do
   log "START  $t"
+  table_start=$SECONDS
   if psql -X -q -v ON_ERROR_STOP=1 -v today="$(date +%Y%m%d)" -f "tables/$t.sql" 2>&1 | tee -a "$LOG"; then
-    log "DONE   $t"
+    log "DONE   $t ($((SECONDS - table_start)) s)"
   else
-    log "FAILED $t - maintenance stopped, the tables after it were not run (error above)"
+    log "FAILED $t after $((SECONDS - table_start)) s - maintenance stopped, the tables after it were not run (error above)"
     exit 1
   fi
 done
-log "COMPLETED DM maintenance: ${#TABLES[@]} table(s). Log: $LOG"
+log "COMPLETED DM maintenance: ${#TABLES[@]} table(s) in $((SECONDS - run_start)) s. Log: $LOG"
